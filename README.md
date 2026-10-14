@@ -12,10 +12,18 @@
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | P0 | 开发方案（技术路线、驱动方案、里程碑） | ✅ 完成（`docs/winperfmon-dev-plan.md`） |
-| P1 | 设计文档集：配置数据结构与接口、AMD 支持、UI 设置、发布合规 | ✅ 完成（`docs/` 7 份 + 笔记本电脑遥测证据综述 1 份） |
-| P2 | 编码实现（M0 骨架 → M1 传感器 → M2 FPS → M3 Overlay → M4 打包） | ⛔ 未开始（用户要求先整理文档；本机暂无 C++ 工具链） |
+| P1 | 设计文档集：配置数据结构与接口、AMD 支持、UI 设置、发布合规 | ✅ 完成（`docs/` 7 份设计文档 + 1 份证据综述 + 1 份构建手册） |
+| P2 | 编码实现（M0 骨架 → M1 传感器 → M2 FPS → M3 Overlay → M4 打包） | 🔵 进行中：**M0 已完成**（免驱频率/占用 + 内存 + 配置系统 + 22 个单测全绿），M1–M4 未开始 |
 
-**当前仓库内没有可运行代码，只有设计文档。**
+**M0 骨架已可构建运行**：`build\winperfmon.exe` 约 1.35 MB，零第三方运行时依赖。
+构建与验收步骤见 `docs/build-and-run.md`；M1（Ring0 传感器）在此骨架上继续。
+
+```cmd
+call tools\env.cmd
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+build\winperfmon.exe --selftest
+```
 
 ## 二、文档清单（7 份设计文档 + 1 份证据综述 + 1 份构建手册）
 
@@ -28,7 +36,8 @@
 | `docs/amd-facts.md` | AMD 8 项技术事实的**证据账本**：结论 / 证据（文件:行号 或 URL）/ 置信度 / 对设计的影响，含 7 处更正与 `amd_tables.json` 字段建议 | ✅ 核实完成（140 行） |
 | `docs/release-github.md` | 发布与许可合规：MIT、第三方合规动作、随包分发 PawnIO（GPL-2.0）/ 模块（LGPL-2.1）、仓库与 CI、发布物、检查清单、隐私要点、芯片表贡献流程 | ✅ 设计稿（`wil` 已按 §6.1-1 移出依赖表） |
 | `docs/laptop-telemetry-facts.md` | **笔记本电脑遥测证据综述**（证据，非设计）：ACPI 热区、EC 直连、厂商 WMI 全矩阵（HP / Dell / Lenovo / ASUS / MSI / Acer / Gigabyte / Clevo / Surface / Framework）、可借鉴开源实现、分层回退链建议。**主方案 §3.3.1 的依据**，逐条带 URL 与 `repo:path:line` | ✅ 核实完成（444 行） |
-| `docs/build-and-run.md` | **M0 构建与验收手册**：便携工具链（GCC 16.2 / CMake 4.4 / Ninja）、构建命令、CLI 用法与覆盖项、单测范围、本机 M0 验收记录 | ✅ M0 完成 || `README.md` | 本文：索引 + 决策状态 + 开放问题汇总 + 术语 | ✅ |
+| `docs/build-and-run.md` | **M0 构建与验收手册**：便携工具链（GCC 16.2 / CMake 4.4 / Ninja）、构建命令、CLI 用法与覆盖项、单测范围、本机 M0 验收记录 | ✅ M0 完成 |
+| `README.md` | 本文：索引 + 决策状态 + 开放问题汇总 + 术语 | ✅ |
 
 ## 三、建议阅读顺序
 
