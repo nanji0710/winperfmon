@@ -70,7 +70,7 @@
 | AMD | **ADLX**（随驱动安装，`IADLXGPUMetrics`；先用 `IADLXGPUMetricsSupport` 探测支持项） | GPU 使用率、GFX/显存频率、温度（edge/hotspot/VRAM）、风扇转速、功耗、电压、显存占用。旧卡降级 **ADL2** `ADL2_New_QueryPMLogData_Get`（`ADL_PMLOG_*`） |
 | Intel (Arc/Iris Xe) | **IGCL**：`ctlPowerTelemetryGet`（功耗/频率/温度）、`ctlEnumTemperatureSensors`、`ctlFanGetSpeed`/`ctlFanGetConfig`、`ctlFrequencyGetState`；备用 **Level Zero Sysman**（`zesPowerGetEnergyCounter` 等） | 功耗、频率、温度、风扇 RPM、显存 |
 
-- 多 GPU/笔记本混合输出：枚举全部设备并标注 iGPU/dGPU，默认选中"当前正在渲染的 GPU"（优先用 PresentMon 报告的 GPU，其次用使用率最高者）。
+- 多 GPU/笔记本混合输出：枚举全部设备并标注 iGPU/dGPU，默认选中"当前正在渲染的 GPU"（优先用 PresentMon 报告的 GPU，其次用使用率最高者）；用户可用 `gpu.selectedIndex` 覆盖（`-1` = 自动），枚举顺序与虚拟适配器排序规则见 `docs/config-schema.md` §3.6.1，UI 见 `docs/ui-settings.md` §6.2。
 - NVIDIA 一般不提供风扇 RPM（仅 %），AMD/Intel 可给 RPM。
 
 ### 3.3 主板风扇转速（Ring0 必需）

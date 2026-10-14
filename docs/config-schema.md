@@ -7,7 +7,7 @@
 
 | # | 不变量 | 说明 |
 |---|---|---|
-| 1 | **单一事实来源** | 指标「可见性」与「顺序」合并到同一个有序数组 `metrics`，避免两份清单互相矛盾（例如顺序表里有、可见性表里没有） |
+| 1 | **单一事实来源** | 指标「可见性」与「顺序」合并到同一个有序数组 `metrics`，避免两份清单互相矛盾（例如顺序表里有、可见性表里没有）；同理 GPU 选择只有 `gpu.selectedIndex` 一处，不设「默认 GPU」旁路 |
 | 2 | **前向兼容** | 新版新增指标自动追加到末尾并按其默认可见性出现；旧版读新文件时忽略未知字段、丢弃未知指标并记诊断，不崩溃 |
 | 3 | **写入不破坏** | 原子替换 + 保留上一版 `.bak`；**解析失败绝不覆盖用户文件** |
 | 4 | **校验即修复** | 非法值不抛异常、不阻断启动：夹紧到边界或回退默认，并产出诊断项（界面可提示） |
@@ -51,7 +51,8 @@
   "text":    { },
   "window":  { },
   "update":  { },
-  "fps":     { }
+  "fps":     { },
+  "gpu":     { }
 }
 ```
 
@@ -172,7 +173,18 @@
 | `showTrayIcon` | bool | — | `true` | 托盘图标 |
 | `startWithWindows` | bool | — | `false` | 开机自启（写入 HKCU Run，需用户显式开启） |
 
-### 3.7 `update`（采样）
+### 3.6.1 `gpu`（设备选择 —— 决策：§6.1-2 已闭环）
+
+| 字段 | 类型 | 取值范围 | 默认 | 说明 |
+|---|---|---|---|---|
+| `selectedIndex` | int | `-1` \| `0`–15 | `-1` | 监控哪一个 GPU。`-1` = **自动**：优先取 PresentMon 报告的正在渲染的 GPU，其次取使用率最高者；`0`–`15` = 强制指定枚举下标 |
+
+**设备枚举顺序（下标语义，UI 必须显示同一顺序）：** 物理适配器优先，**虚拟/间接显示适配器恒排在物理适配器之后**；虚拟适配器可被手动选中（调试用），但在 UI 中标注 `虚拟显示适配器（通常无有效遥测）`。判定依据：`Win32_VideoController.PNPDeviceID` 以 `PCI\` 开头的为物理，`ROOT\` / `INDIRECTDSP\` 等为虚拟。
+
+> 本机实测旁证（2026-10，HP ZHAN66 14 G8a）：`Win32_VideoController` 返回 4 个适配器 = `AMD Radeon(TM) Graphics`（`PCI\VEN_1002&DEV_1900`，Radeon 780M）+ 3 个虚拟适配器（GameViewer / OrayIddDriver / Honor）。**若按枚举顺序取「第一个」，拿到的是虚拟适配器** —— 这是本字段存在的直接原因。
+
+**修复规则：** 下标越界（≥ 本机适配器数）→ 回退 `-1` 并记 Warning 诊断；被选中的 GPU 缺少某项遥测时按 §4 说明与 `layout.hideMissing` 处理，**绝不回退到另一个 GPU 的读数值**。
+
 
 | 字段 | 类型 | 取值范围 | 默认 | 说明 |
 |---|---|---|---|---|
@@ -229,8 +241,8 @@
 | `gpu.throttle.reason` | gpu | 显卡降频原因 | — | — | ❌ | NVML `GetCurrentClocksThrottleReasons`；ADLX |
 | `gpu.enc.usage` | gpu | 编码器 | % | 0 | ❌ | NVML / ADLX |
 | `gpu.dec.usage` | gpu | 解码器 | % | 0 | ❌ | NVML / ADLX |
-| `fan.cpu.rpm` | fan | CPU 风扇 | RPM | 0 | ❌ | Super I/O（Nuvoton/ITE）→ 笔记本 EC |
-| `fan.chassis1..6.rpm` | fan | 机箱风扇 N | RPM | 0 | ❌ | 同上 |
+| `fan.cpu.rpm` | fan | CPU 风扇 | RPM | 0 | ❌ | 台式机 Super I/O（Nuvoton/ITE）→ 笔记本 EC / 厂商 WMI（见主方案 §3.3.1） |
+| `fan.chassis1..6.rpm` | fan | 机箱风扇 N | RPM | 0 | ❌ | 同上（笔记本通常只有 1 个风扇，映射到 `fan.cpu.rpm`） |
 | `fan.pump.rpm` | fan | 水泵 | RPM | 0 | ❌ | 同上 |
 | `mb.temp.vrm` | fan | 供电温度 | °C | 0 | ❌ | Super I/O |
 | `mb.temp.board` | fan | 主板温度 | °C | 0 | ❌ | Super I/O |
@@ -247,7 +259,8 @@
 | `sys.time` | sys | 时间 | — | — | ❌ | 本地时钟 |
 | `sys.session` | sys | 采集时长 | s | 0 | ❌ | 会话计时器 |
 
-> 说明：`④ GPU 指标`由 NVML/ADLX/IGCL 能力探测决定——硬件不暴露的项按 `hideMissing` 规则隐藏，**绝不填假值**（沿用主方案「缺失读数规则」）。
+> 说明：`④ GPU 指标`由 NVML/ADLX/IGCL 能力探测决定——硬件不暴露的项按 `hideMissing` 规则隐藏，**绝不填假值**（沿用主方案「缺失读数规则」）。**所有 GPU 指标只对 `gpu.selectedIndex` 选中的那一个适配器求值**，切换设备等于换数据源（`Revision` 递增、缓冲清零）。
+> `④ 笔记本补充路径`：`cpu.temp.package` 在无 Ring0 的笔记本上可降级到 ACPI 热区域（`CPUZ` 区域）；`fan.*.rpm` 在笔记本上走 EC / 厂商 WMI（主方案 §3.3.1），**三条路径都读不到时显示 N/A 并说明原因**。
 
 ## 5. 校验与修复规则（ValidationPolicy）
 
@@ -302,6 +315,7 @@ struct WindowConfig { TopmostPolicy topmost = TopmostPolicy::Always; bool clickT
                       PositionMode posMode = PositionMode::Preset; Corner corner = Corner::TopLeft;
                       int x = 0, y = 0; int marginDp = 12; std::string monitorId;   // 空 = 主显示器
                       bool hideInFullscreen = false; bool showTrayIcon = true; bool startWithWindows = false; };
+struct GpuConfig    { int selectedIndex = -1; };   // -1 = 自动（渲染中的 GPU），0..15 = 枚举下标
 struct UpdateConfig { int sensorIntervalMs = 500; int overlayRefreshFps = 2; int panelRefreshFps = 4;
                       bool pauseWhenHidden = true; bool lowPowerOnBattery = false; };
 struct FpsConfig    { FpsMode mode = FpsMode::Auto; std::string targetProcess; bool autoStartOnGame = true;
@@ -318,6 +332,7 @@ struct Config {
     WindowConfig              window;
     UpdateConfig              update;
     FpsConfig                 fps;
+    GpuConfig                 gpu;
 };
 
 // ── 指标目录（编译期内置，非用户配置）──────────────────────────────────
@@ -447,7 +462,8 @@ bool ApplyCommandLineOverrides(Config&, int argc, const wchar_t* const* argv,
     "mode": "auto", "targetProcess": "", "autoStartOnGame": true,
     "keepBufferFrames": 65536, "lowPercentile": 0.01,
     "stutterFactor": 2.0, "stutterBaseline": "mean", "showPresentMode": true
-  }
+  },
+  "gpu": { "selectedIndex": -1 }
 }
 ```
 
@@ -475,4 +491,4 @@ bool ApplyCommandLineOverrides(Config&, int argc, const wchar_t* const* argv,
 | 4 | 是否开放阈值（warn/critical）自定义 | 当前由指标目录内置，v2 可开放 |
 | 5 | 是否允许自定义字体族 | 首版只允许系统 UI 字体，v2 再开放列表 |
 | 6 | 多显示器位置是否需要逐屏记忆 | 当前只记 `monitorId` + 一组坐标 |
-| 7 | 是否需要 GPU 选择字段（候选 `gpu.selectedIndex`，`-1` = 自动选渲染 GPU） | 多 GPU / 混合输出机器（笔记本 iGPU + dGPU、双独显、外接显卡）需要指定监控对象；当前 `Config` 无 GPU 选择字段，若采纳需新增 `gpu` 区块并同步主方案 §3.2 与 UI 的「关于/硬件」页 |
+| 7 | ~~是否需要 GPU 选择字段~~ | ✅ **已决（§6.1-2）：采纳 `gpu.selectedIndex`**（`-1` = 自动选渲染 GPU，`0`–`15` = 枚举下标），新增 §3.6.1 `gpu` 区块与 `GpuConfig` 类型；枚举顺序与虚拟适配器排序规则见该节。本行保留以便引用（不再是开放问题） |

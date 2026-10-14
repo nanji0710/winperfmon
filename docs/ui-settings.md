@@ -103,11 +103,23 @@
 | 独占全屏时隐藏 | `window.hideInFullscreen` | 说明文案：非注入方案在真独占全屏下无法覆盖，隐藏可避免无意义的叠层 |
 | 托盘图标 / 开机自启 | `window.showTrayIcon` / `startWithWindows` | 开机自启写入 `HKCU\...\Run`，需显式开启并在「关于」页可撤销 |
 
+### 6.2 GPU 选择（决策：`gpu.selectedIndex`）
+
+| 控件 | 绑定字段 | 行为 |
+|---|---|---|
+| GPU 下拉框 | `gpu.selectedIndex` | 首项固定为「自动（正在渲染的 GPU）」（值 `-1`）；其余每项 = 一台适配器，显示 `名称 · 显存 · 驱动版本`，右侧标注数据源（`NVML` / `ADLX` / `IGCL` / `无遥测`）与可用性标记 |
+
+- **枚举顺序必须与 `docs/config-schema.md` §3.6.1 完全一致**（物理适配器优先，虚拟/间接显示适配器排在最后并标注 `虚拟显示适配器（通常无有效遥测）`），否则用户在下拉框里选中的序号会指向错误的设备。
+- 该项**只在检测到 ≥ 2 个显示适配器时显示**；单适配器机器隐藏该控件，`gpu.selectedIndex` 保持 `-1`（等价于"就是它"）。
+- 切换设备：GPU 类指标会短暂显示 `—`，缓冲清零、`Revision` 递增；**不得沿用上一台设备的读数**。
+- 「自动」判定失败（例如 PresentMon 不可用且所有 GPU 使用率都读不到）时，回退到**第一台物理适配器**并在下拉框下方提示原因，不静默切换。
+
 ## 7. 页面：采样与性能
 
 | 控件 | 绑定字段 | 行为 |
 |---|---|---|
 | 传感器间隔 | `update.sensorIntervalMs` | 200–5000 ms；下方实时显示「预估额外 CPU 占用 ≈ 0.2%」之类的量测值（来自运行期统计，不是拍脑袋常数） |
+| GPU 设备 | `gpu.selectedIndex` | 见 §6.2；仅在 ≥ 2 个显示适配器时出现 |
 | Overlay 刷新率 | `update.overlayRefreshFps` | 1–10 Hz，默认 2；提示「提高会增加游戏内开销」 |
 | 主面板刷新率 | `update.panelRefreshFps` | 1–30 Hz |
 | 隐藏时暂停采样 | `update.pauseWhenHidden` | 开关 |
@@ -135,6 +147,7 @@
 | `window.scale` / `position` / `marginDp` / `monitorId` | 重算几何并移动窗口 |
 | `update.*` | 重设定时器周期；采样线程下一拍生效 |
 | `fps.*` | 需要重开会话（停止旧采集 → 按新模式重启）；切换时 Overlay 上的帧率项短暂显示 `—` |
+| `gpu.selectedIndex` | 换数据源：GPU 类指标短暂显示 `—`，缓冲清零、`Revision` 递增；不重启进程（若选定 GPU 的提供程序尚未加载则先加载） |
 | `text.fontFamily` | 重建 DirectWrite 文本格式与布局缓存 |
 
 ## 10. 键盘、DPI 与可访问性

@@ -88,7 +88,7 @@ Copyright (c) <YEAR> <COPYRIGHT HOLDER>
 
 ### 3.3 构建期与工具链类
 
-- **`wil`**（MIT，**以随附许可证原文为准**）：Win32 RAII/资源封装（开发方案 §5）→ 以子模块或源码引入时在 `third_party/` 保留 LICENSE 原文。
+- ~~**`wil`**（MIT）~~：**已否决，不再引入**（2026-10 拍板，见 `docs/README.md` §6.1-1）。理由：`wil` 是 header-only 的 Win32 RAII/资源封装，而本项目 M0 实际只需约 50 行自写封装（`HANDLE` / `HKEY` / COM 智能指针），引入后反而要维护 `third_party/` 与许可证清单、并把「零第三方依赖」口径改成「一个标头库」。**若将来确有引入需要，必须同步更新本节、§3.4 红线、`NOTICE`、`docs/README.md` §6.1 与 `docs/config-schema.md` §0 不变量 6。**
 - ~~`nlohmann/json` / `simdjson`~~：**已否决，不再引入**（决策 ⑧：配置读写用自研极简 JSON 子集，约 300 行 + 单测，保持零第三方依赖；PresentMon 的数据源是逐帧 CSV，本来也不需要 JSON 库）。若将来确有引入需要，必须同步更新本节、`NOTICE` 与 `config-schema.md` §0 不变量 6。
 - **MSVC / Windows SDK / CMake**：仅构建期使用、不随包分发；`/MT` 静态 CRT 产物的再分发条款以 Visual Studio 许可为准（**待核实**）；**CI 第三方 action**（如 `msvc-dev-cmd`、`action-gh-release`，各自许可证**待核实**）：版本固定到 commit SHA（不用浮动 `@v1`），降低供应链风险。
 
