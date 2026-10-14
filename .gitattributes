@@ -1,0 +1,2 @@
+# 仓库内统一 LF，避免 Windows 检出时行尾抖动（文档与源码同规则）
+* text=auto eol=lf

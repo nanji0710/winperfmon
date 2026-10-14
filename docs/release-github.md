@@ -166,9 +166,11 @@ winperfmon/                        # 仓库根（名称已定：winperfmon）
 ├─ README.md / README.en.md        # 英文版是否需要：待定（§10）
 ├─ LICENSE · NOTICE · CHANGELOG.md · SECURITY.md · CONTRIBUTING.md · .gitignore
 ├─ CMakeLists.txt · cmake/         # 工具链与依赖查找（FindNVML.cmake 等）
-├─ docs/                           # release-github.md(本文件) · metrics.md(指标口径/降级规则)
-│                                  # hardware-support.md(CPU/GPU/Super I/O 与主板特判矩阵)
-│                                  # 发布前需新建：privacy.md(隐私声明) · contributing-sensors.md(芯片表贡献流程，见本文 §11)
+├─ docs/                           # 设计文档集（7 份，索引见仓库根 README.md）
+│                                  # winperfmon-dev-plan.md(主方案) · config-schema.md(配置数据契约)
+│                                  # ui-settings.md(设置界面行为) · amd-cpu.md + amd-facts.md(AMD 支持与证据账本)
+│                                  # release-github.md(本文件) · 发布前需新建：metrics.md(指标口径/降级规则)
+│                                  # privacy.md(隐私声明) · contributing-sensors.md(芯片表贡献流程，见本文 §11)
 ├─ include/winperfmon/             # 公共头（provider 接口）
 ├─ src/
 │  ├─ app/ (入口/单实例/CLI) · ui/ (Win32+Direct2D/托盘/Overlay)

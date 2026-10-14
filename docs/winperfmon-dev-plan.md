@@ -147,7 +147,7 @@
   - 需要的模块（来自 `PawnIO.Modules`）：`IntelMSR.p`（MSR 读写）、`AMDFamily0F/10/17.p`（按 CPU family 选）、`RyzenSMU.p`（PM 表）、`LpcIO.p`（端口 I/O / Super I/O）。
   - 调用范式可直接照 nwinfo：`WR0_ExecPawn(h, &h->pio_intel, "ioctl_read_msr", &in, 1, &out, 1, NULL)`，并配 `--driver=CPUZ162|NwHwIo|PawnIO|NONE` 式回退链（找不到驱动 → 自动退免驱模式）。
   - 用 PawnIO 仍需**安装驱动 + 模块**，Windows 会弹"安装驱动"类安全提示 → 必须像 LHM PR #1777 那样提供**"禁用 Ring0 驱动安装"开关**，让用户能选纯免驱模式。
-- **许可处理（决策 ③=B 已定）**：`PawnIO`（驱动／安装包）为 **GPL-2.0**，`PawnIO.Modules`（`.bin` 模块）为 **LGPL-2.1**（GitHub REST API `license.spdx_id = LGPL-2.1`；仓库 `COPYING` 记 LGPL-2.1-or-later）。我们**不链接、不复制其源码**，只在运行期经 IOCTL 调用；**官方签名安装包随发布包附带**，首次运行检测未装则**引导用户确认后静默安装**（可拒绝 → 免驱模式），并随包提供其许可证原文与**对应源码获取说明**（驱动 GPL-2.0、模块 LGPL-2.1；若随包提供模块还须保证模块可被用户替换；发布前须做法务确认）。**不**拆发驱动 `.bin`/`.sys`，也**不**自研安装器与驱动签名。合规动作逐条见 `winperfmon/docs/release-github.md` §3.5。
+- **许可处理（决策 ③=B 已定）**：`PawnIO`（驱动／安装包）为 **GPL-2.0**，`PawnIO.Modules`（`.bin` 模块）为 **LGPL-2.1**（GitHub REST API `license.spdx_id = LGPL-2.1`；仓库 `COPYING` 记 LGPL-2.1-or-later）。我们**不链接、不复制其源码**，只在运行期经 IOCTL 调用；**官方签名安装包随发布包附带**，首次运行检测未装则**引导用户确认后静默安装**（可拒绝 → 免驱模式），并随包提供其许可证原文与**对应源码获取说明**（驱动 GPL-2.0、模块 LGPL-2.1；若随包提供模块还须保证模块可被用户替换；发布前须做法务确认）。**不**拆发驱动 `.bin`/`.sys`，也**不**自研安装器与驱动签名。合规动作逐条见 `docs/release-github.md` §3.5。
 - **免驱动"轻量模式"（必须有）**：仅 PDH CPU 频率 + NVML/ADLX/IGCL GPU 全指标；CPU 温度/功耗/主板风扇显示 `N/A` 并给出明确原因提示。这条路径让工具在 Vanguard 等强反作弊环境下依然可用。
 
 ---
@@ -157,7 +157,7 @@
 **主推：C++20 / MSVC / CMake**
 - `/MT` 静态 CRT，`/O2 /GL /LTCG /GS`，产物 2–4 MB，工作集 ~15 MB。
 - UI：纯 **Win32 + Direct2D/DirectWrite** 自绘（卡片 + 帧时间曲线），无 Qt/MFC/Electron。
-- 依赖：配置读写用**自研极简 JSON**（零第三方依赖，见 `winperfmon/docs/config-schema.md` 不变量 6）；PresentMon 数据是**逐帧 CSV**（官方无 JSON 输出），无需 JSON 库。`wil`（MIT，RAII/资源）是否引入留待编码前拍板；能用 `std::format` 就不引 fmt。
+- 依赖：配置读写用**自研极简 JSON**（零第三方依赖，见 `docs/config-schema.md` 不变量 6）；PresentMon 数据是**逐帧 CSV**（官方无 JSON 输出），无需 JSON 库。`wil`（MIT，RAII/资源）是否引入留待编码前拍板；能用 `std::format` 就不引 fmt。
 - 日志：内存环形 + 异步落盘 CSV（双缓冲，采集线程零阻塞）。
 
 **备选 A：C# .NET 9 + NativeAOT + `LibreHardwareMonitorLib`（MPL-2.0）+ PresentMon SDK P/Invoke**
@@ -260,16 +260,16 @@
 
 ## 12. 决策点与状态
 
-> 本节已按用户最新指令更新；细化文档见 `winperfmon/docs/`（索引：`winperfmon/docs/README.md`）。
+> 本节已按用户最新指令更新；细化文档见 `docs/`（索引：仓库根 `README.md`）。
 
 | # | 决策点 | 状态 | 结论 / 影响 |
 |---|---|---|---|
-| 1 | 是否必须覆盖 AMD CPU | ✅ **已决：是** | M1 按「Intel + AMD 双路」估算；AMD 侧设计见 `winperfmon/docs/amd-cpu.md`（SMN/SMU PM 表、Tctl/Tdie、RAPL、PawnIO AMD 模块） |
+| 1 | 是否必须覆盖 AMD CPU | ✅ **已决：是** | M1 按「Intel + AMD 双路」估算；AMD 侧设计见 `docs/amd-cpu.md`（SMN/SMU PM 表、Tctl/Tdie、RAPL、PawnIO AMD 模块） |
 | 2 | GPU 是三家都做还是先 NVIDIA | ✅ **已决：三家都做** | v1 覆盖 NVIDIA（NVML）、AMD（ADLX，旧卡回退 ADL2）、Intel（IGCL，备用 Level Zero Sysman）；三家的能力探测与真机验证都进 M1，无 Intel 真机的部分代码标 `unverified`（见本文 §9 风险表） |
-| 3 | PawnIO 分发方式 | ✅ **已决：随发布包附带官方安装包并静默安装**（决策 ③=B） | 发布物 = 便携 ZIP（`winperfmon.exe` + PawnIO 官方签名安装包 + GPL-2.0／LGPL-2.1 许可证文本与源码获取说明）；构建期下载并按 SHA-256 锁定；首次运行检测未装则引导用户确认后静默安装（一次 UAC，可拒绝），拒绝即落免驱模式（CPU 温度/功耗/风扇显示 N/A 并说明原因）；我方代码仍为 MIT（mere aggregation，合规动作见 winperfmon/docs/release-github.md §3.5，发布前须做法务确认） |
-| 4 | 真独占全屏（FSE）下 Overlay 可见性 | ✅ **已决：硬需求 → RTSS OSD 共享内存后端为主路径**（决策 ④=B） | 自绘无注入 Overlay 在真 FSE（`Hardware: Legacy Flip`）下架构上不可见（DWM 不参与合成）；主路径改为写 `RTSSSharedMemoryV2`（我方不注入，注入由用户自装的 RTSS 完成）；无 RTSS 时回退自绘 Overlay 并明确提示；RTSS 模式下字号/颜色只能按 RTSS OSD 标签近似映射，位置/不透明度/点击穿透由 RTSS 控制（见 winperfmon/docs/ui-settings.md §6.1） |
-| 5 | 是否需要发布给他人使用 | ✅ **已决：是（发布到 GitHub）** | 需 LICENSE / NOTICE / 隐私声明 / CI / Release 流程，见 `winperfmon/docs/release-github.md`；首版 portable zip + 单 EXE，不做安装器与驱动签名 |
-| 6 | 运行时用户自定义设置 | ✅ **已决：要** | 排版方式（横向/纵向）、指标可见性与排序、置顶策略、文字大小与颜色；数据结构与读写接口见 `winperfmon/docs/config-schema.md`，交互行为见 `winperfmon/docs/ui-settings.md` |
+| 3 | PawnIO 分发方式 | ✅ **已决：随发布包附带官方安装包并静默安装**（决策 ③=B） | 发布物 = 便携 ZIP（`winperfmon.exe` + PawnIO 官方签名安装包 + GPL-2.0／LGPL-2.1 许可证文本与源码获取说明）；构建期下载并按 SHA-256 锁定；首次运行检测未装则引导用户确认后静默安装（一次 UAC，可拒绝），拒绝即落免驱模式（CPU 温度/功耗/风扇显示 N/A 并说明原因）；我方代码仍为 MIT（mere aggregation，合规动作见 docs/release-github.md §3.5，发布前须做法务确认） |
+| 4 | 真独占全屏（FSE）下 Overlay 可见性 | ✅ **已决：硬需求 → RTSS OSD 共享内存后端为主路径**（决策 ④=B） | 自绘无注入 Overlay 在真 FSE（`Hardware: Legacy Flip`）下架构上不可见（DWM 不参与合成）；主路径改为写 `RTSSSharedMemoryV2`（我方不注入，注入由用户自装的 RTSS 完成）；无 RTSS 时回退自绘 Overlay 并明确提示；RTSS 模式下字号/颜色只能按 RTSS OSD 标签近似映射，位置/不透明度/点击穿透由 RTSS 控制（见 docs/ui-settings.md §6.1） |
+| 5 | 是否需要发布给他人使用 | ✅ **已决：是（发布到 GitHub）** | 需 LICENSE / NOTICE / 隐私声明 / CI / Release 流程，见 `docs/release-github.md`；首版 portable zip + 单 EXE，不做安装器与驱动签名 |
+| 6 | 运行时用户自定义设置 | ✅ **已决：要** | 排版方式（横向/纵向）、指标可见性与排序、置顶策略、文字大小与颜色；数据结构与读写接口见 `docs/config-schema.md`，交互行为见 `docs/ui-settings.md` |
 | 7 | 产品名 / 仓库名 | ✅ **已决：winperfmon** | EXE = `winperfmon.exe`、配置目录 = `%APPDATA%\winperfmon\config.json`、仓库名 = `winperfmon`；GitHub 同名仓库已有 2 个（`jusu1234/WinPerfMon`、`AronZhi/WinPerfMonDll`，均 0★、无许可证、非活跃），以「用户名/winperfmon」全名区分；商标检索建议发布前补做 |
 | 8 | 依赖策略（配置读写 / PresentMon 数据解析） | ✅ **已决** | 配置读写用**自研极简 JSON（零第三方依赖）**；PresentMon 数据是逐帧 CSV（官方无 JSON 输出）；`wil`（MIT）是否引入留待编码前拍板 —— 见 `config-schema.md` §0 不变量 6 |
 
