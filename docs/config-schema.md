@@ -191,7 +191,7 @@
 | `autoStartOnGame` | bool | — | `true` | 检测到前台全屏游戏时自动开采集 |
 | `keepBufferFrames` | int | 4096–262144 | `65536` | 帧时间环形缓冲容量（65536 帧 ≈ 1080p60 下 18 分钟；内存 512 KB） |
 | `lowPercentile` | float | 0.001–0.05 | `0.01` | 1% Low 口径的百分位（0.01 = 最差 1%） |
-| `stutterFactor` | float | 1.5–10.0 | `2.0` | 卡顿判定系数：`帧时间 > stutterFactor × 基线帧时间` 记为卡顿帧（口径定义见 `fps-metrics.md` §6） |
+| `stutterFactor` | float | 1.5–10.0 | `2.0` | 卡顿判定系数：`帧时间 > stutterFactor × 基线帧时间` 记为卡顿帧（口径定义见 `winperfmon-dev-plan.md` §3.4） |
 | `stutterBaseline` | enum | `mean` \| `median` | `mean` | 卡顿判定基线：`mean` = 平均帧时间（v1 默认，可与 CapFrameX / Afterburner 对拍）、`median` = 中位帧时间；切换只影响 `fps.stutter` |
 | `showPresentMode` | bool | — | `true` | 状态栏显示 PresentMode，用于自查 Overlay 是否把游戏从 Independent Flip 降级为 Composed: Flip |
 
@@ -236,11 +236,11 @@
 | `mb.temp.board` | fan | 主板温度 | °C | 0 | ❌ | Super I/O |
 | `fps.instant` | fps | FPS | FPS | 0 | ✅ | PresentMon（服务 SDK → 命令行） |
 | `fps.avg` | fps | 平均 FPS | FPS | 0 | ✅ | 调和平均：`帧数 × 1000 / Σ帧时间` |
-| `fps.low1` | fps | 1% Low | FPS | 0 | ✅ | 最差 1% 帧时间均值取倒数（§ `fps-metrics.md`） |
+| `fps.low1` | fps | 1% Low | FPS | 0 | ✅ | 最差 1% 帧时间均值取倒数（口径见 `winperfmon-dev-plan.md` §3.4） |
 | `fps.low01` | fps | 0.1% Low | FPS | 0 | ❌ | 同上，百分位 0.001 |
 | `fps.frametime` | fps | 帧时间 | ms | 1 | ❌ | PresentMon `MsBetweenPresents` |
 | `fps.frametime.graph` | fps | 帧时间曲线 | — | — | ❌ | 环形缓冲 sparkline（30–200 px） |
-| `fps.stutter` | fps | 卡顿率 | % | 1 | ❌ | `帧时间 > stutterFactor × 基线帧时间`（默认 `2.0 × 平均帧时间`，基线可切中位）的帧占比，口径见 `fps-metrics.md` §6 |
+| `fps.stutter` | fps | 卡顿率 | % | 1 | ❌ | `帧时间 > stutterFactor × 基线帧时间`（默认 `2.0 × 平均帧时间`，基线可切中位）的帧占比，口径见 `winperfmon-dev-plan.md` §3.4 |
 | `fps.presentmode` | fps | 呈现模式 | — | — | ❌ | PresentMon `PresentMode`（检测 Overlay 是否导致降级） |
 | `fps.cpu.busy` | fps | CPU 忙 | ms | 1 | ❌ | PresentMon `MsCPUBusy` |
 | `fps.gpu.busy` | fps | GPU 忙 | ms | 1 | ❌ | PresentMon `MsGPUBusy` |
@@ -475,4 +475,4 @@ bool ApplyCommandLineOverrides(Config&, int argc, const wchar_t* const* argv,
 | 4 | 是否开放阈值（warn/critical）自定义 | 当前由指标目录内置，v2 可开放 |
 | 5 | 是否允许自定义字体族 | 首版只允许系统 UI 字体，v2 再开放列表 |
 | 6 | 多显示器位置是否需要逐屏记忆 | 当前只记 `monitorId` + 一组坐标 |
-| 7 | 是否需要 GPU 选择字段（候选 `gpu.selectedIndex`，`-1` = 自动选渲染 GPU） | 多 GPU / 混合输出机器（笔记本 iGPU + dGPU、双独显、外接显卡）需要指定监控对象；当前 `Config` 无 GPU 选择字段，若采纳需新增 `gpu` 区块并同步 `gpu-fans.md` §4 与 UI 的「关于/硬件」页 |
+| 7 | 是否需要 GPU 选择字段（候选 `gpu.selectedIndex`，`-1` = 自动选渲染 GPU） | 多 GPU / 混合输出机器（笔记本 iGPU + dGPU、双独显、外接显卡）需要指定监控对象；当前 `Config` 无 GPU 选择字段，若采纳需新增 `gpu` 区块并同步主方案 §3.2 与 UI 的「关于/硬件」页 |

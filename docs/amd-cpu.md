@@ -1,6 +1,6 @@
 # AMD CPU 支持设计（Zen 架构）
 
-> 文档状态：**设计稿 v1（部分数值标注「待核实」）** · 关联：`cpu-intel.md`（Intel 对照路径）、`config-schema.md` §4（指标 ID 目录）、`architecture.md`（模块边界）
+> 文档状态：**设计稿 v2（8 项技术事实已核实：6 ✅ / 2 ❌ 无一手来源并给出探测方案，详见 `amd-facts.md`）** · 关联：`winperfmon-dev-plan.md` §3.1（Intel 对照路径）与 §2（模块边界）、`config-schema.md` §4（指标 ID 目录）
 > 来源：主方案 §3.1 的 AMD 补充行（数值已对照 nwinfo 源码与 LHM/RyzenAdj 实现核实），专项核实任务已完成，结论与证据见 `amd-facts.md`；本文被改动处均标注「（已核实，见 amd-facts.md N）」。
 
 ## 1. 目标与范围

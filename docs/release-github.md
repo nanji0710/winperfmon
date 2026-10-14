@@ -89,7 +89,7 @@ Copyright (c) <YEAR> <COPYRIGHT HOLDER>
 ### 3.3 构建期与工具链类
 
 - **`wil`**（MIT，**以随附许可证原文为准**）：Win32 RAII/资源封装（开发方案 §5）→ 以子模块或源码引入时在 `third_party/` 保留 LICENSE 原文。
-- ~~`nlohmann/json` / `simdjson`~~：**已否决，不再引入**（决策 ⑧：配置读写用自研极简 JSON 子集，约 300 行 + 单测，保持零第三方依赖；PresentMon 的数据源是逐帧 CSV，本来也不需要 JSON 库）。若将来确有引入需要，必须同步更新本节、`NOTICE`、`config-schema.md` §0 不变量 6 与 `architecture.md` §12。
+- ~~`nlohmann/json` / `simdjson`~~：**已否决，不再引入**（决策 ⑧：配置读写用自研极简 JSON 子集，约 300 行 + 单测，保持零第三方依赖；PresentMon 的数据源是逐帧 CSV，本来也不需要 JSON 库）。若将来确有引入需要，必须同步更新本节、`NOTICE` 与 `config-schema.md` §0 不变量 6。
 - **MSVC / Windows SDK / CMake**：仅构建期使用、不随包分发；`/MT` 静态 CRT 产物的再分发条款以 Visual Studio 许可为准（**待核实**）；**CI 第三方 action**（如 `msvc-dev-cmd`、`action-gh-release`，各自许可证**待核实**）：版本固定到 commit SHA（不用浮动 `@v1`），降低供应链风险。
 
 ### 3.4 三条最容易踩的合规红线
@@ -168,7 +168,7 @@ winperfmon/                        # 仓库根（名称已定：winperfmon）
 ├─ CMakeLists.txt · cmake/         # 工具链与依赖查找（FindNVML.cmake 等）
 ├─ docs/                           # release-github.md(本文件) · metrics.md(指标口径/降级规则)
 │                                  # hardware-support.md(CPU/GPU/Super I/O 与主板特判矩阵)
-│                                  # privacy.md(隐私与安全声明) · contributing-sensors.md(芯片表贡献流程)
+│                                  # 发布前需新建：privacy.md(隐私声明) · contributing-sensors.md(芯片表贡献流程，见本文 §11)
 ├─ include/winperfmon/             # 公共头（provider 接口）
 ├─ src/
 │  ├─ app/ (入口/单实例/CLI) · ui/ (Win32+Direct2D/托盘/Overlay)
@@ -266,7 +266,7 @@ winperfmon/                        # 仓库根（名称已定：winperfmon）
 - [ ] 无厂商 SDK 再分发副本（`nvml.dll`、ADLX、IGCL、`PresentMonAPI2.dll` 等）
 - [ ] README 写明依赖前提、降级路径、SmartScreen 提示、最低系统版本
 - [ ] `README.en.md` 是否提供已决定（待定，见 §10）
-- [ ] `docs/metrics.md` 写明 1% Low / 平均 FPS / stutter 口径与异常值规则；`docs/privacy.md` 写明不联网、不采集、不注入、Ring0 可选
+- [ ] `docs/metrics.md` 写明 1% Low / 平均 FPS / stutter 口径与异常值规则（内部口径见开发方案 §3.4）；`docs/privacy.md` 写明不联网、不采集、不注入、Ring0 可选（内部要点见本文 §9）；两份都是发布前需新建的面向用户文件
 - [ ] `SECURITY.md` 提供漏洞报告渠道；`CONTRIBUTING.md` 含芯片表提交日志格式；Issue 模板要求附 `--probe` 输出并提示删除序列号等可识别信息；PR 模板含"代码来源与许可证"声明项
 - [ ] `.gitignore` 覆盖构建产物、用户配置、日志、转储（§5.2）
 - [ ] 仓库无密钥 / 证书 / CI 令牌；历史提交无敏感信息泄露（必要时 filter-repo 重写历史）
@@ -283,6 +283,8 @@ winperfmon/                        # 仓库根（名称已定：winperfmon）
 - **数据仅本地**：日志与 CSV 仅在用户开启时写本地；导出内容不含机器名 / 用户名 / 序列号 / GPU UUID（或提供匿名化开关）。
 - **反作弊场景**：检测到受保护进程时不触碰其进程，自动退到 GPU-only + PresentMon FPS（开发方案 §9）；README 明示"不保证在所有反作弊环境可用"，避免预期落差。
 - **免责**：读数为参考值，不用于质保申诉或超频安全决策。
+- **本地数据与残留**：唯一持久化位置是 `%APPDATA%\winperfmon\config.json`（便携模式则写程序目录）；日志与 CSV 仅在用户开启时写本地；卸载 winperfmon **不移除**用户自行安装的 PawnIO（其他工具可能依赖），只提供说明与手动卸载指引。
+- **可编译期完全断网**：提供编译开关 `WPM_NO_NETWORK=1`，让「从不联网」版本在构建期剔除全部网络代码；默认构建也只在用户主动点击「检查更新」时发起一次 HTTPS 请求。
 
 ## 10. 风险与开放问题
 
@@ -290,7 +292,7 @@ winperfmon/                        # 仓库根（名称已定：winperfmon）
 |---|---|
 | 仓库名 / 产品名 / EXE 名 | ✅ **已定：winperfmon**（EXE `winperfmon.exe`、仓库 `winperfmon`）。GitHub 重名初查结果：`jusu1234/WinPerfMon`（2017，C#，0★，无许可证）、`AronZhi/WinPerfMonDll`（2022，C++，0★，无许可证）——均非活跃同类产品，我方以全名「用户名/winperfmon」区分；**商标检索仍建议发布前补做**（附录 A-1） |
 | 是否需要英文 README | 待定：英文可获国际用户与更多 Super I/O 反馈，但有双份文档同步成本 |
-| 是否接受社区提交 Super I/O 芯片表 | **已定义流程，见 `contributing-sensors.md`**：`--probe` 输出格式固定为 `probeVersion=1`（chip ID、候选型号、主板 DMI 字符串、端口探测结果、每通道原始计数与寄存器出处），要求贡献者确认已匿名化并提供至少一项对拍值（BIOS/HWiNFO）；维护者人工核对后并入芯片表，**无 SLA、不承诺"下个版本一定支持"** |
+| 是否接受社区提交 Super I/O 芯片表 | **已定义流程，见本文 §11**：`--probe` 输出格式固定为 `probeVersion=1`（chip ID、候选型号、主板 DMI 字符串、端口探测结果、每通道原始计数与寄存器出处），要求贡献者确认已匿名化并提供至少一项对拍值（BIOS/HWiNFO）；维护者人工核对后并入芯片表，**无 SLA、不承诺"下个版本一定支持"** |
 | PresentMon 未安装时的提示措辞 | README / UI / Release Notes 三处须一致；**不提供内置一键下载**（会引入联网行为，与"不联网"声明冲突），只给网页链接 |
 | 首版 pre-release 转正标准 | 待定：建议以"覆盖 N 个真实用户机器报告、无高危崩溃"为门槛 |
 | 是否开启 Discussions / Sponsors | 待定，取决于维护精力 |
@@ -305,6 +307,75 @@ winperfmon/                        # 仓库根（名称已定：winperfmon）
 | `.bin` 模块是否需我们分发 | 待核实（附录 A-11） | 若需分发，除 GPL-2.0 动作外还须履行 LGPL-2.1（模块源码/要约 + 声明 + 允许替换） |
 | RTSS 成为硬需求的依赖项 | 用户未装 RTSS 时真 FSE 下无 Overlay（自动回退自绘） | 安装提示与降级文案纳入 M3/M4 验收 |
 | RTSS 注入与反作弊 | 注入由 RTSS 完成，非本程序 | README 与 Release Notes 中「不注入」的表述必须限定为**「本程序不注入」** |
+
+## 11. 传感器芯片表贡献流程（原 `contributing-sensors.md` 合并）
+
+> 面向用户的贡献指南在发布前需独立成 `docs/contributing-sensors.md`；本节是它的内部版本。寄存器数值（映射、入口序列、已知坑）一律以开发方案 §3.3 为准，本节只规定「数据怎么交上来、怎么变成芯片表条目」。
+
+**为什么需要**：Windows 上没有可复用的独立 Super I/O 库；同一颗芯片在不同主板上风扇通道与分频寄存器不同，甚至上报 ID 也不同（`NCT6796D` 实为 `NCT5585D`、`NCT6799D` 实为 `NCT6796DS`）。芯片表（`sensor-tables/*.json`）因此是数据驱动、可随版本更新的，而社区提交的原始探测数据是扩充它的唯一可靠来源。**不接受**只有「帮我加一下 XX 主板」而没有原始数据的请求。
+
+**三步流程**：① 管理员运行探针 `wpm.exe --probe > probe.txt`（未装 PawnIO 时仍输出免驱部分，并在 `[issues]` 记 `pawnio=absent`）；② 自查并匿名化（默认掩码主机名 / 用户名 / 序列号 / UUID / MAC / IP）；③ 开 Issue 附 `probe.txt` + 物理含义问卷（哪个通道对应 CPU_FAN / SYS_FAN1 / PUMP）+ 至少一项对拍值（BIOS 或 HWiNFO）。
+
+**`--probe` 输出格式（`probeVersion=1`，UTF-8 无 BOM、`key=value` 行式、数组段用 `.N` 后缀，段序固定）**：
+
+```ini
+probeVersion=1
+appVersion=0.1.0
+osBuild=26100
+admin=true
+pawnio=present
+hvci=off
+ring0Backend=PawnIO/AMDFamily17.p
+
+[system]
+dmi.board.vendor=Acer
+dmi.board.name=B650M DS3H
+dmi.bios.version=F32a
+
+[superio]
+lpc.portPair=0x2E/0x2F
+chip.id=0xC5
+chip.idHi=0x60
+chip.candidate=NCT6779D
+quirks=NCT6796D->NCT5585D
+
+[fan.1]
+count.raw=33120
+count.loReg=0x4B
+count.hiReg=0x4C
+divisor=1
+rpm=40
+pwm=0x80
+
+[temp.1]
+raw=0x41
+celsius=65.0
+halfDegree=false
+
+[volt.1]
+raw=0xC0
+volts=1.104
+nominal=1.100
+gain=0.012
+
+[gpu.1]
+vendor=nvidia
+name=GeForce RTX 4070
+fanRpm=1350
+
+[issues]
+- IT8792 在探测时上报 0x8883（状态机被抢先进入）
+```
+
+> 要点：`[system]` 用于区分「同芯片不同板」；`chip.*` 必须给高字节 ID；`[fan.N]` 必须保留原始计数与寄存器出处（否则无法判定 8/16 位计数与分频位域）；`[volt.N]` 必须给 `nominal`；`[issues]` 是最有价值的排障信息。
+
+**维护者流程**：`tools/probe2table.py`（待开发）生成候选条目 → 人工核对寄存器与公式 → 落入 `sensor-tables/<vendor>-<chip>.json`（字段示例：`{ "chip": "NCT6779D", "chipId": [0xC5, 0x60], "bank": 0, "fans": [{"index": 1, "countLo": "0x4B", "countHi": "0x4C", "divisorReg": "0x0B", "divisorShift": 0, "rpmFormula": "1350000/(count*divisor)"}], "temps": [], "volts": [], "quirks": [] }`）→ 增加 canned 回归用例（无硬件也能在 CI 跑）→ 在 `CHANGELOG.md` 的「传感器支持变化」节登记。冲突时**以探测原始数据为准**，解释不通就加「主板特判」。
+
+**隐私红线**：默认掩码；探针**永不联网**（只写 stdout / 文件）；不接受未掩码序列号的日志、只有截图没有原始寄存器值的数据、要求我方联网采集的方案。
+
+**不被接受的提交**：只有截图没有 `probe.txt`；只说「风扇读不到」而没有 `[superio]` 段；要求支持笔记本 EC 却没有 `[issues]` 里的 EC 邮箱访问结果；`probeVersion` 不匹配的旧输出。
+
+**预期管理**：芯片表由维护者人工核对后并入版本，**无 SLA**；首版（M1）只承诺已验证过的芯片与主板。
 
 ## 附录 A：本文标注「待核实」的条目（共 12 项）
 

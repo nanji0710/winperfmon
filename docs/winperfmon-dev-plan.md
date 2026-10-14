@@ -265,13 +265,13 @@
 | # | 决策点 | 状态 | 结论 / 影响 |
 |---|---|---|---|
 | 1 | 是否必须覆盖 AMD CPU | ✅ **已决：是** | M1 按「Intel + AMD 双路」估算；AMD 侧设计见 `winperfmon/docs/amd-cpu.md`（SMN/SMU PM 表、Tctl/Tdie、RAPL、PawnIO AMD 模块） |
-| 2 | GPU 是三家都做还是先 NVIDIA | ✅ **已决：三家都做** | v1 覆盖 NVIDIA（NVML）、AMD（ADLX，旧卡回退 ADL2）、Intel（IGCL，备用 Level Zero Sysman）；三家的能力探测与真机验证都进 M1，无 Intel 真机的部分代码标 `unverified`（见 `winperfmon/docs/roadmap.md` §风险） |
+| 2 | GPU 是三家都做还是先 NVIDIA | ✅ **已决：三家都做** | v1 覆盖 NVIDIA（NVML）、AMD（ADLX，旧卡回退 ADL2）、Intel（IGCL，备用 Level Zero Sysman）；三家的能力探测与真机验证都进 M1，无 Intel 真机的部分代码标 `unverified`（见本文 §9 风险表） |
 | 3 | PawnIO 分发方式 | ✅ **已决：随发布包附带官方安装包并静默安装**（决策 ③=B） | 发布物 = 便携 ZIP（`winperfmon.exe` + PawnIO 官方签名安装包 + GPL-2.0／LGPL-2.1 许可证文本与源码获取说明）；构建期下载并按 SHA-256 锁定；首次运行检测未装则引导用户确认后静默安装（一次 UAC，可拒绝），拒绝即落免驱模式（CPU 温度/功耗/风扇显示 N/A 并说明原因）；我方代码仍为 MIT（mere aggregation，合规动作见 winperfmon/docs/release-github.md §3.5，发布前须做法务确认） |
 | 4 | 真独占全屏（FSE）下 Overlay 可见性 | ✅ **已决：硬需求 → RTSS OSD 共享内存后端为主路径**（决策 ④=B） | 自绘无注入 Overlay 在真 FSE（`Hardware: Legacy Flip`）下架构上不可见（DWM 不参与合成）；主路径改为写 `RTSSSharedMemoryV2`（我方不注入，注入由用户自装的 RTSS 完成）；无 RTSS 时回退自绘 Overlay 并明确提示；RTSS 模式下字号/颜色只能按 RTSS OSD 标签近似映射，位置/不透明度/点击穿透由 RTSS 控制（见 winperfmon/docs/ui-settings.md §6.1） |
 | 5 | 是否需要发布给他人使用 | ✅ **已决：是（发布到 GitHub）** | 需 LICENSE / NOTICE / 隐私声明 / CI / Release 流程，见 `winperfmon/docs/release-github.md`；首版 portable zip + 单 EXE，不做安装器与驱动签名 |
 | 6 | 运行时用户自定义设置 | ✅ **已决：要** | 排版方式（横向/纵向）、指标可见性与排序、置顶策略、文字大小与颜色；数据结构与读写接口见 `winperfmon/docs/config-schema.md`，交互行为见 `winperfmon/docs/ui-settings.md` |
 | 7 | 产品名 / 仓库名 | ✅ **已决：winperfmon** | EXE = `winperfmon.exe`、配置目录 = `%APPDATA%\winperfmon\config.json`、仓库名 = `winperfmon`；GitHub 同名仓库已有 2 个（`jusu1234/WinPerfMon`、`AronZhi/WinPerfMonDll`，均 0★、无许可证、非活跃），以「用户名/winperfmon」全名区分；商标检索建议发布前补做 |
-| 8 | 依赖策略（配置读写 / PresentMon 数据解析） | ✅ **已决** | 配置读写用**自研极简 JSON（零第三方依赖）**；PresentMon 数据是逐帧 CSV（官方无 JSON 输出）；`wil`（MIT）是否引入留待编码前拍板 —— 见 `winperfmon/docs/config-schema.md` 不变量 6、`winperfmon/docs/architecture.md` §12 |
+| 8 | 依赖策略（配置读写 / PresentMon 数据解析） | ✅ **已决** | 配置读写用**自研极简 JSON（零第三方依赖）**；PresentMon 数据是逐帧 CSV（官方无 JSON 输出）；`wil`（MIT）是否引入留待编码前拍板 —— 见 `config-schema.md` §0 不变量 6 |
 
 ---
 
