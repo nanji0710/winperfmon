@@ -49,7 +49,7 @@
 | 指标 ID | 首选来源 | 备用 | 免驱 | 期望精度 |
 |---|---|---|---|---|
 | `cpu.freq.avg` | PM 表每核频率求平均（`IA32_APERF/MPERF` 在 AMD 上不可用，首选已改为 PM 表——已核实，见 amd-facts.md 3） | 绑核 PState 当前值 | PDH × 基频 | ±50 MHz |
-| `cpu.freq.perCore` | PM 表每核频率 | 绑核 PState 当前值 | ✗ | ±50 MHz |
+| `cpu.freq.percore` | PM 表每核频率 | 绑核 PState 当前值 | ✗ | ±50 MHz |
 | `cpu.temp.package` | PM 表 Tdie | SMN Tctl（按 §5.2 的 `−49 °C` 量程与型号 offset 修正——已核实，见 amd-facts.md 2） | ✗ | ±2 °C（对拍 HWiNFO） |
 | `cpu.temp.cores` | PM 表每核/每 CCD 温度 | ✗ | ✗ | 参考值 |
 | `cpu.temp.headroom` | 按 SKU 取的温度上限 − 当前温度（无家族级常数；取不到 SKU 即不可用——已核实，见 amd-facts.md 7） | ✗ | ✗ | 上限表精度 |

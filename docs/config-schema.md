@@ -211,53 +211,53 @@
 
 命名规范：`<域>.<对象>.<量>`，全小写点分；风扇槽位 `fan.<槽位>.rpm`（`cpu` / `chassis1..6` / `pump`）；GPU 风扇归入 `gpu.fan.*`。
 
-| 指标 ID | 分组 | 默认名称 | 单位 | 精度 | 默认可见 | 数据来源（首选 → 降级） |
-|---|---|---|---|---|---|---|
-| `cpu.usage` | cpu | CPU | % | 0 | ✅ | PDH / `NtQuerySystemInformation` |
-| `cpu.freq.avg` | cpu | CPU 频率 | MHz | 0 | ✅ | APERF/MPERF 差分（Intel/AMD）→ PDH `% Processor Performance` × 基频 |
-| `cpu.freq.perCore` | cpu | 每核频率 | MHz | 0 | ❌ | 绑核读 MSR |
-| `cpu.temp.package` | cpu | CPU 温度 | °C | 0 | ✅ | Intel `0x19C`/`0x1B1`；AMD SMN `0x00059800`（Tctl/Tdie） |
-| `cpu.temp.cores` | cpu | 每核温度 | °C | 0 | ❌ | Intel 每核 DTS；AMD PM 表 |
-| `cpu.temp.headroom` | cpu | 距温度上限 | °C | 0 | ❌ | Intel `TjMax − DTS`；AMD 家族上限表 − Tctl |
-| `cpu.power.package` | cpu | CPU 功耗 | W | 1 | ✅ | RAPL 能量差分（Intel `0x611` / AMD `0xC001029B`）；AMD 可并列 PM 表 PPT |
-| `cpu.power.cores` | cpu | 核心功耗 | W | 1 | ❌ | Intel RAPL PP0（`0x639`）；AMD 无核级 RAPL（可用 PM 表核心功耗，标注为参考值） |
-| `cpu.power.soc` | cpu | SoC / Uncore 功耗 | W | 1 | ❌ | Intel RAPL PP1（`0x641`）；AMD PM 表 SoC 域 |
-| `cpu.power.dram` | cpu | 内存功耗 | W | 1 | ❌ | Intel RAPL DRAM（`0x619`） |
-| `cpu.voltage` | cpu | CPU 电压 | V | 3 | ❌ | Intel `0x198`；AMD SVI2（PM 表） |
-| `cpu.throttle.reason` | cpu | 降频原因 | — | — | ❌ | Intel 热/功耗/电流限制位；AMD PM 表限制位 |
-| `mem.usage` | sys | 内存 | % | 0 | ✅ | `GlobalMemoryStatusEx` |
-| `mem.used` | sys | 已用内存 | GB | 1 | ❌ | 同上 |
-| `gpu.usage` | gpu | GPU | % | 0 | ✅ | NVML / ADLX / IGCL |
-| `gpu.freq.core` | gpu | GPU 频率 | MHz | 0 | ✅ | 同上 |
-| `gpu.freq.mem` | gpu | 显存频率 | MHz | 0 | ✅ | 同上 |
-| `gpu.temp.core` | gpu | GPU 温度 | °C | 0 | ✅ | 同上 |
-| `gpu.temp.hotspot` | gpu | 热点温度 | °C | 0 | ❌ | NVML / ADLX |
-| `gpu.temp.mem` | gpu | 显存温度 | °C | 0 | ❌ | NVML `NVML_FI_DEV_MEMORY_TEMP`；ADLX |
-| `gpu.power` | gpu | GPU 功耗 | W | 1 | ✅ | NVML `GetPowerUsage`(mW)；ADLX；IGCL |
-| `gpu.fan.percent` | gpu | 显卡风扇 | % | 0 | ❌ | NVML（多为百分比）；ADLX/IGCL |
-| `gpu.fan.rpm` | gpu | 显卡风扇 | RPM | 0 | ❌ | ADLX / IGCL（NVIDIA 通常不提供 RPM） |
-| `gpu.vram.usage` | gpu | 显存占用 | % | 0 | ❌ | NVML / ADLX |
-| `gpu.vram.used` | gpu | 显存已用 | GB | 1 | ❌ | 同上 |
-| `gpu.throttle.reason` | gpu | 显卡降频原因 | — | — | ❌ | NVML `GetCurrentClocksThrottleReasons`；ADLX |
-| `gpu.enc.usage` | gpu | 编码器 | % | 0 | ❌ | NVML / ADLX |
-| `gpu.dec.usage` | gpu | 解码器 | % | 0 | ❌ | NVML / ADLX |
-| `fan.cpu.rpm` | fan | CPU 风扇 | RPM | 0 | ❌ | 台式机 Super I/O（Nuvoton/ITE）→ 笔记本 EC / 厂商 WMI（见主方案 §3.3.1） |
-| `fan.chassis1..6.rpm` | fan | 机箱风扇 N | RPM | 0 | ❌ | 同上（笔记本通常只有 1 个风扇，映射到 `fan.cpu.rpm`） |
-| `fan.pump.rpm` | fan | 水泵 | RPM | 0 | ❌ | 同上 |
-| `mb.temp.vrm` | fan | 供电温度 | °C | 0 | ❌ | Super I/O |
-| `mb.temp.board` | fan | 主板温度 | °C | 0 | ❌ | Super I/O |
-| `fps.instant` | fps | FPS | FPS | 0 | ✅ | PresentMon（服务 SDK → 命令行） |
-| `fps.avg` | fps | 平均 FPS | FPS | 0 | ✅ | 调和平均：`帧数 × 1000 / Σ帧时间` |
-| `fps.low1` | fps | 1% Low | FPS | 0 | ✅ | 最差 1% 帧时间均值取倒数（口径见 `winperfmon-dev-plan.md` §3.4） |
-| `fps.low01` | fps | 0.1% Low | FPS | 0 | ❌ | 同上，百分位 0.001 |
-| `fps.frametime` | fps | 帧时间 | ms | 1 | ❌ | PresentMon `MsBetweenPresents` |
-| `fps.frametime.graph` | fps | 帧时间曲线 | — | — | ❌ | 环形缓冲 sparkline（30–200 px） |
-| `fps.stutter` | fps | 卡顿率 | % | 1 | ❌ | `帧时间 > stutterFactor × 基线帧时间`（默认 `2.0 × 平均帧时间`，基线可切中位）的帧占比，口径见 `winperfmon-dev-plan.md` §3.4 |
-| `fps.presentmode` | fps | 呈现模式 | — | — | ❌ | PresentMon `PresentMode`（检测 Overlay 是否导致降级） |
-| `fps.cpu.busy` | fps | CPU 忙 | ms | 1 | ❌ | PresentMon `MsCPUBusy` |
-| `fps.gpu.busy` | fps | GPU 忙 | ms | 1 | ❌ | PresentMon `MsGPUBusy` |
-| `sys.time` | sys | 时间 | — | — | ❌ | 本地时钟 |
-| `sys.session` | sys | 采集时长 | s | 0 | ❌ | 会话计时器 |
+| # | 指标 ID | 分组 | 默认名称 | 单位 | 精度 | 默认可见 | 数据来源（首选 → 降级） |
+|---|---|---|---|---|---|---|---|
+| 1 | `cpu.usage` | cpu | CPU | % | 0 | ✅ | PDH / `NtQuerySystemInformation` |
+| 2 | `cpu.freq.avg` | cpu | CPU 频率 | MHz | 0 | ✅ | APERF/MPERF 差分（Intel/AMD）→ PDH `% Processor Performance` × 基频 |
+| 3 | `cpu.freq.percore` | cpu | 每核频率 | MHz | 0 | ❌ | 绑核读 MSR |
+| 4 | `cpu.temp.package` | cpu | CPU 温度 | °C | 0 | ✅ | Intel `0x19C`/`0x1B1`；AMD SMN `0x00059800`（Tctl/Tdie） |
+| 5 | `cpu.temp.cores` | cpu | 每核温度 | °C | 0 | ❌ | Intel 每核 DTS；AMD PM 表 |
+| 6 | `cpu.temp.headroom` | cpu | 距温度上限 | °C | 0 | ❌ | Intel `TjMax − DTS`；AMD 家族上限表 − Tctl |
+| 7 | `cpu.power.package` | cpu | CPU 功耗 | W | 1 | ✅ | RAPL 能量差分（Intel `0x611` / AMD `0xC001029B`）；AMD 可并列 PM 表 PPT |
+| 8 | `cpu.power.cores` | cpu | 核心功耗 | W | 1 | ❌ | Intel RAPL PP0（`0x639`）；AMD 无核级 RAPL（可用 PM 表核心功耗，标注为参考值） |
+| 9 | `cpu.power.soc` | cpu | SoC / Uncore 功耗 | W | 1 | ❌ | Intel RAPL PP1（`0x641`）；AMD PM 表 SoC 域 |
+| 10 | `cpu.power.dram` | cpu | 内存功耗 | W | 1 | ❌ | Intel RAPL DRAM（`0x619`） |
+| 11 | `cpu.voltage` | cpu | CPU 电压 | V | 3 | ❌ | Intel `0x198`；AMD SVI2（PM 表） |
+| 12 | `cpu.throttle.reason` | cpu | 降频原因 | — | — | ❌ | Intel 热/功耗/电流限制位；AMD PM 表限制位 |
+| 13 | `mem.usage` | sys | 内存 | % | 0 | ✅ | `GlobalMemoryStatusEx` |
+| 14 | `mem.used` | sys | 已用内存 | GB | 1 | ❌ | 同上 |
+| 15 | `gpu.usage` | gpu | GPU | % | 0 | ✅ | NVML / ADLX / IGCL |
+| 16 | `gpu.freq.core` | gpu | GPU 频率 | MHz | 0 | ✅ | 同上 |
+| 17 | `gpu.freq.mem` | gpu | 显存频率 | MHz | 0 | ✅ | 同上 |
+| 18 | `gpu.temp.core` | gpu | GPU 温度 | °C | 0 | ✅ | 同上 |
+| 19 | `gpu.temp.hotspot` | gpu | 热点温度 | °C | 0 | ❌ | NVML / ADLX |
+| 20 | `gpu.temp.mem` | gpu | 显存温度 | °C | 0 | ❌ | NVML `NVML_FI_DEV_MEMORY_TEMP`；ADLX |
+| 21 | `gpu.power` | gpu | GPU 功耗 | W | 1 | ✅ | NVML `GetPowerUsage`(mW)；ADLX；IGCL |
+| 22 | `gpu.fan.percent` | gpu | 显卡风扇 | % | 0 | ❌ | NVML（多为百分比）；ADLX/IGCL |
+| 23 | `gpu.fan.rpm` | gpu | 显卡风扇 | RPM | 0 | ❌ | ADLX / IGCL（NVIDIA 通常不提供 RPM） |
+| 24 | `gpu.vram.usage` | gpu | 显存占用 | % | 0 | ❌ | NVML / ADLX |
+| 25 | `gpu.vram.used` | gpu | 显存已用 | GB | 1 | ❌ | 同上 |
+| 26 | `gpu.throttle.reason` | gpu | 显卡降频原因 | — | — | ❌ | NVML `GetCurrentClocksThrottleReasons`；ADLX |
+| 27 | `gpu.enc.usage` | gpu | 编码器 | % | 0 | ❌ | NVML / ADLX |
+| 28 | `gpu.dec.usage` | gpu | 解码器 | % | 0 | ❌ | NVML / ADLX |
+| 29 | `fan.cpu.rpm` | fan | CPU 风扇 | RPM | 0 | ❌ | 台式机 Super I/O（Nuvoton/ITE）→ 笔记本 EC / 厂商 WMI（见主方案 §3.3.1） |
+| 30 | `fan.chassis1..6.rpm` | fan | 机箱风扇 N | RPM | 0 | ❌ | 同上（笔记本通常只有 1 个风扇，映射到 `fan.cpu.rpm`） |
+| 31 | `fan.pump.rpm` | fan | 水泵 | RPM | 0 | ❌ | 同上 |
+| 32 | `mb.temp.vrm` | fan | 供电温度 | °C | 0 | ❌ | Super I/O |
+| 33 | `mb.temp.board` | fan | 主板温度 | °C | 0 | ❌ | Super I/O |
+| 34 | `fps.instant` | fps | FPS | FPS | 0 | ✅ | PresentMon（服务 SDK → 命令行） |
+| 35 | `fps.avg` | fps | 平均 FPS | FPS | 0 | ✅ | 调和平均：`帧数 × 1000 / Σ帧时间` |
+| 36 | `fps.low1` | fps | 1% Low | FPS | 0 | ✅ | 最差 1% 帧时间均值取倒数（口径见 `winperfmon-dev-plan.md` §3.4） |
+| 37 | `fps.low01` | fps | 0.1% Low | FPS | 0 | ❌ | 同上，百分位 0.001 |
+| 38 | `fps.frametime` | fps | 帧时间 | ms | 1 | ❌ | PresentMon `MsBetweenPresents` |
+| 39 | `fps.frametime.graph` | fps | 帧时间曲线 | — | — | ❌ | 环形缓冲 sparkline（30–200 px） |
+| 40 | `fps.stutter` | fps | 卡顿率 | % | 1 | ❌ | `帧时间 > stutterFactor × 基线帧时间`（默认 `2.0 × 平均帧时间`，基线可切中位）的帧占比，口径见 `winperfmon-dev-plan.md` §3.4 |
+| 41 | `fps.presentmode` | fps | 呈现模式 | — | — | ❌ | PresentMon `PresentMode`（检测 Overlay 是否导致降级） |
+| 42 | `fps.cpu.busy` | fps | CPU 忙 | ms | 1 | ❌ | PresentMon `MsCPUBusy` |
+| 43 | `fps.gpu.busy` | fps | GPU 忙 | ms | 1 | ❌ | PresentMon `MsGPUBusy` |
+| 44 | `sys.time` | sys | 时间 | — | — | ❌ | 本地时钟 |
+| 45 | `sys.session` | sys | 采集时长 | s | 0 | ❌ | 会话计时器 |
 
 > 说明：`④ GPU 指标`由 NVML/ADLX/IGCL 能力探测决定——硬件不暴露的项按 `hideMissing` 规则隐藏，**绝不填假值**（沿用主方案「缺失读数规则」）。**所有 GPU 指标只对 `gpu.selectedIndex` 选中的那一个适配器求值**，切换设备等于换数据源（`Revision` 递增、缓冲清零）。
 > `④ 笔记本补充路径`：`cpu.temp.package` 在无 Ring0 的笔记本上可降级到 ACPI 热区域（`CPUZ` 区域）；`fan.*.rpm` 在笔记本上走 EC / 厂商 WMI（主方案 §3.3.1），**三条路径都读不到时显示 N/A 并说明原因**。
@@ -434,6 +434,7 @@ bool ApplyCommandLineOverrides(Config&, int argc, const wchar_t* const* argv,
     { "id": "gpu.temp.core", "visible": true },
     { "id": "gpu.power", "visible": true },
     { "id": "gpu.freq.core", "visible": true },
+    { "id": "gpu.freq.mem", "visible": true },
     { "id": "gpu.usage", "visible": true },
     { "id": "mem.usage", "visible": true },
     { "id": "fps.instant", "visible": true },
@@ -467,7 +468,8 @@ bool ApplyCommandLineOverrides(Config&, int argc, const wchar_t* const* argv,
 }
 ```
 
-> 程序写盘时会把 `metrics` **按指标目录全量展开**（不只是上面示例的 13 项），保证「顺序 + 可见性」在一个文件里完整可见、可手工编辑。
+> 上面示例的 `visible: true` 共 **13 项**，与 §4 表格「默认可见」列的 ✅ 完全一致（`cpu.usage`、`cpu.freq.avg`、`cpu.temp.package`、`cpu.power.package`、`mem.usage`、`gpu.usage`、`gpu.freq.core`、`gpu.freq.mem`、`gpu.temp.core`、`gpu.power`、`fps.instant`、`fps.avg`、`fps.low1`）。
+> 程序写盘时会把 `metrics` **按指标目录全量展开**（不只是上面示例的 14 项），保证「顺序 + 可见性」在一个文件里完整可见、可手工编辑。
 
 ## 8. 版本与迁移
 

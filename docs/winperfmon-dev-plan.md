@@ -88,10 +88,83 @@
   - IT8688E 写完地址寄存器后回读不匹配，**不能用回读校验，必须特判**。
   - IT8665E / IT8655E **每次 update 前必须 SelectBank(0)**，否则温度与转速乱跳；bank 选择在休眠/恢复后失效。
   - 型号识别必须按主板特判：X870E Nova WiFi 上 "NCT6796D" 实为 **NCT5585D**、"NCT6799D" 实为 **NCT6796DS**；MSI B840/B850/B860/X870/Z890 上 "NCT6687D" 实为 **NCT6687DR**。**只认 chip ID 会读错** → 做成"chip ID + 主板特判表"的数据驱动层。
-- 笔记本：多数机型风扇走 ACPI EC（端口 `0x62/0x66`），寄存器映射因 OEM 而异 → 优先级最低，先只支持常见游戏本映射。
+- 笔记本：**没有独立 Super I/O**，多数机型风扇走 ACPI EC（端口 `0x62/0x66`）或厂商 WMI，寄存器映射因 OEM 而异 → 见 **§3.3.1**（温度与风扇的完整分层降级链）。
 - 常数来源与许可：**nwinfo（Unlicense）可直接搬**；**LibreHardwareMonitor（MPL-2.0）** `LibreHardwareMonitorLib/Hardware/Motherboard/Lpc/*.cs` 是文件级 copyleft——移植的文件须保留 MPL 声明并保证源码可获取；纯常数可自由使用，但别照抄文件结构。交叉校验可用 `siomon`（Rust/MIT）、`VirtualSMC/SMCSuperIO`（C++）。
 - 不可读时显示 `N/A`，不要伪造。
 - **现实提醒**：Windows 上**不存在独立的 Super I/O 库**（只有 Linux `it87`/`nct6775` 与 macOS 实现；LHM 也没有官方 C++/Rust 移植，现存全是"包一层 .NET"的桥）。这块**没有整套现成代码可抄**，必须自建并随新主板持续维护——本项目最大的工程风险。
+
+### 3.3.1 笔记本温度与风扇（无独立 Super I/O 的机型）
+
+> 本节结论来自 `docs/laptop-telemetry-facts.md`（逐条带 URL 与 `repo:path:line` 的证据综述）。**本机（HP 战 66 14 G8a / AMD Ryzen 7 H 255）正是这一类机型**，故本节不是补充而是主路径之一。
+
+**前提事实（决定了架构，不是可选项）**
+
+1. **Windows 上不存在用户态可打开的 EC 设备对象。** `\Device\ACPIEC` 是内核对象；`IOCTL_ACPI_*` 在 DDK 头里标 `Environment: NT Kernel Model Driver only`；grep.app 全库无 `\\.\ACPIEC` 用户态先例。→ **EC 直读只能走 Ring0**，这与 §3.3 的 Super I/O 是同一个结论，风扇转速在笔记本上没有"免驱直读"这条路。
+2. **免驱的厂商 WMI 通路确实存在，但多数需要管理员**：Dell 现代机型走 `root\dcim\sysman\diagnostics` → `LegacyDiags.Execute`（FanControl 维护者在 2026 Dell Pro Max 16 实测通过，无需内核驱动）；HP `root\hp\InstrumentedBIOS` → `HPBIOS_BIOSNumericSensor` 暴露**真 RPM**（`BaseUnits` ValueMap 19 = RPM、`SensorType` 12 = Air Flow）。两条路都要求提权——v1 本来就是 `requireAdministrator`，正好可用。
+3. **ACPI 热区是最后兜底，且有两条路径**：`root\WMI` 的 `MSAcpi_ThermalZoneTemperature`（**十分之一开尔文**，需提权）与 `root\CIMV2` 的 `Win32_PerfFormattedData_Counters_ThermalZoneInformation`（**开尔文**，通常免提权可读）/ PDH 计数器集 GUID `{52bc5412-dac2-449c-8bc2-96443888fe6b}`。后者是免驱动的关键。
+
+**温度分层降级链（可信度降序）**
+
+| # | 来源 | 前置条件 | 输出 | 失败判定 |
+|---|---|---|---|---|
+| T1 | **MSR/SMN via PawnIO**：Intel `IA32_THERM_STATUS 0x19C` / `IA32_PACKAGE_THERM_STATUS 0x1B1`（`TjMax` 取 `MSR_TEMPERATURE_TARGET 0x1A2` bits[23:16]，温度 = `TjMax − DTS`）；AMD SMN `THM_TCON_CUR_TMP 0x00059800` bits[31:21] × 0.125 | 已装 PawnIO | CPU 温度（最可信） | 读数为 0 或长期不变 → 丢弃，**不要显示 0** |
+| T2 | **GPU 温度**：NVML / ADLX / IGCL | 无 | ✅ 免驱 | 库缺失 → 跳过 |
+| T3 | **厂商 WMI**：HP `HPBIOS_BIOSNumericSensor`；Dell `LegacyDiags` `eax=0x10a3`；Lenovo `LENOVO_GAMEZONE_DATA` 18/19；Gigabyte `getCpuTemp`/`getGpuTemp1`；Acer `AcerGamingFunction`；ASUS `DSTS 0x00120094/0x00120097` | 已提权 | 温度 + **来源标签** | 传感器缺失（HP `OperationalStatus` 12/13）、类不存在（MOF 未注册）→ 降级 |
+| T4 | **ACPI 热区两层**：① `MSAcpi_ThermalZoneTemperature`（需提权）→ ② `Win32_PerfFormattedData_Counters_ThermalZoneInformation` / PDH 计数器集，**counter id 3「High Precision」优先于 id 0**（`id 3 = value/10 − 273`，`id 0 = value − 273`） | 无 | 温度（兜底） | 见下方"探测-再信任"判据 |
+| T5 | **外部监视器共享内存**：Afterburner `MAHMSharedMemory` → HWiNFO `Global\HWiNFO_SENS_SM2`（需 Pro）→ CoreTemp | 对方正在运行 | 温度，**必须标注「来源=外部程序」** | 时间戳 > 15 s、`FLT_MAX`、名字不匹配 → 丢弃 |
+
+**风扇转速分层降级链**
+
+| # | 来源 | 输出语义 | 前置条件 |
+|---|---|---|---|
+| F1 | **PawnIO EC**：`LpcACPIEC.p`（仅放行端口 `0x62`/`0x66`）+ 机型寄存器表 | 真 RPM；**若该表给出的是原始标量，必须按标量呈现，不得标成 RPM** | 已装 PawnIO **且**机型在表中 |
+| F2 | **确认是 RPM 的厂商 WMI**：HP 方法 `0x11`（大端 uint16，输出偏移 2..3）；HP Victus-S 查询 `0x2D`（**返回百转，不是 RPM**）；Dell `LegacyDiags` `eax=0x02a3` × `fan_mult`（30 或 1）；Lenovo `LENOVO_FAN_METHOD.Fan_GetCurrentFanSpeed` / `CAPABILITY_DATA_00.fanX_input`；Gigabyte `getRpm1`/`getRpm2`（**字节序按 DMI product family 决定**） | 真 RPM | 已提权 |
+| F3 | **只有百分比的厂商 WMI**：ASUS `DSTS 0x00110013/0x00110014` | **百分比，不是 RPM** | **不做换算**；UI 标为「转速百分比（厂商固件）」 |
+| F4 | **GPU 风扇**：NVML percent / ADLX / IGCL | 百分比或 RPM | 免驱 |
+| F5 | **N/A** | — | 见下 |
+
+**EC 路径的硬性实现要求（缺一不可）**
+
+1. 先取 `Global\Access_EC` 互斥体（World ACL 创建，失败则 `OpenMutex`），超时 200 ms 级；**必须校验对象位于 `\BaseNamedObjects`，绝不接受会话本地回退**（WinMonitor2 commit `abbbfbc` 的真实教训）。
+2. 只做精确字节读（实测一次 EC 字节事务 1.5–2 ms），轮询周期 ≥ 1 s；0.5 s 级的多字节扫描实测带来 +≈1 W 功耗与 uncore 频率下降。
+3. 读失败**保留上次好值并标 `Stale`，不归零**。
+4. **只读，不写**：v1 完全不碰 ThinkPad `0x93`/`0x94` 这类"写入即改变状态"的寄存器。
+5. PawnIO `LpcACPIEC.p` **只提供 `ioctl_pio_read`/`ioctl_pio_write` 端点，模块内不实现 IBF/OBF 轮询与 RDEC/WRDC 事务**——EC 协议握手必须由我方用户态完成。
+6. 机型寄存器表走 `sensor-tables/<vendor>-<model>.json` + `[issues]` 收集流程（与 `docs/release-github.md` §11 的既有约定打通），字段至少含：EC 寄存器、宽度、字节序、公式，以及**「这是否是真转速表」的显式标记**（反面案例：Acer PH315 的"风扇转速"实为 0..6122 原始标量，FanControl 仍标成 RPM）。
+
+**探测-再信任（所有来源在显示前必须通过的判据）**
+
+1. **值非 0**——`0` 表示无数据，不是 0 RPM。
+2. **不等于哨兵值**——`2732`（ACPI 十分之一开尔文 = 0.0 °C）、`273.15`、`0xffff`、Dell 的 `0x99`（153，瞬时假值需重试）/`0xc1`（193，GPU 已关闭）。
+3. **同机多传感器不应全同值**——ACPI 热区尤其要先判定"是不是所有热区都报同一个常量"。
+4. **数值应随负载变化**——加载后仍恒定 → 不显示。
+
+**诚实降级文案（UI 必须明说原因，不留空、不显示 0）**
+
+| 情形 | 提示要点 |
+|---|---|
+| 未装 PawnIO 且厂商无 WMI 类（多数 ThinkPad / Clevo / 白牌） | 「本机风扇转速需 PawnIO 驱动读取 EC，当前不可用」 |
+| AMD 笔记本未装 PawnIO 且无厂商 WMI | 「本机 CPU 温度需要内核态读取（PawnIO），当前不可用」——**不要显示 0** |
+| 厂商 WMI 类未注册（MSI `MSI_ACPI`、Gigabyte `GB_WMIACPI_Set`） | 「厂商 WMI 类未注册（需厂商软件运行一次）」 |
+| ACPI 热区不存在 / 全部同值 / 恒为 2732 | 「本机固件未提供可用的 ACPI 热区」 |
+| Microsoft Surface 全部机型 | 「Windows 无 Surface 风扇/温度公开接口」，**永久 N/A** |
+| ASUS 只给百分比 | 显示百分比并标注「厂商固件百分比，非转速」 |
+
+**明确没有一手来源的路径（编码时不要假设其存在）**
+
+- ThinkPad **完全没有传感器 WMI 类**（只能走 EC；TPFanControl 需要 TVicPort 内核驱动，且存在两套互不兼容的风扇等级编码 0–7 与 255–0）。
+- Surface 在 Windows 侧**无公开接口**（SAM/EC 仅内核内部）。
+- `DCIM_TemperatureProbe` 类、MSI `micommon` 类名：均未找到证据。
+- **Windows 上从 MSI `MSI_ACPI` 读风扇 RPM 无任何实例**（该 WMI 类需厂商 MOF 注册后才存在，且上游警告其方法**非线程安全** → 所有调用必须串行化）。
+
+**跨切面规则**
+
+- `Global\Access_EC`、`Global\Access_ISABUS.HTP.Method`、`Global\Access_PCI` 三把互斥体都要按 World-ACL 配方创建并 **fail-closed**。
+- Ring0 只走 PawnIO。除已有的 `LpcIO.p`/`IntelMSR.p`/`AMDFamily17.p`/`RyzenSMU.p` 外，笔记本路径还需 **`LpcACPIEC.p`（EC）、`DellSMM.p`（Dell SMM）、`IntelPCHThermal.p`（Intel PCH 温度）**。
+- **SMM 调用必须钉在 CPU 0**（Dell 接口只在 CPU 0 定义）；`DellSMM.p` 已在模块内做亲和性处理，自行实现须复刻。
+- 不要把"外部程序共享内存"与"本机传感器"混在同一数值列，来源必须可见。
+- v2 服务拆分后由 SYSTEM 服务持有 PawnIO 句柄与全部互斥体，普通权限 UI 经 IPC 取数。
+
 
 ### 3.4 FPS / 帧时间 / 1% Low
 
@@ -212,7 +285,7 @@
 | 里程碑 | 工作量 | 内容 | 验收(DoD) |
 |---|---|---|---|
 | **M0 骨架 + 免驱指标** | 2–3 天 | CMake 工程、Win32+Direct2D 窗口/托盘、采集调度器、PDH CPU 频率、NVML 全套 GPU 指标、JSON 配置、CSV 日志 | 双显卡机器上数值与 HWiNFO 一致（±1 °C / ±50 MHz / ±5% 功耗）；内存 ≤15 MB |
-| **M1 Ring0 传感器** | 3–5 天 | PawnIO 集成、MSR 模块（APERF/MPERF、THERM_STATUS、RAPL）、AMD SMN 温度、SuperIO 探测 + 风扇 RPM、豁免降级逻辑 | Intel 12–15 代 + AMD Zen3–5 上 CPU 温度/功耗/风扇全部可用；HVCI 开启不报错 |
+| **M1 Ring0 传感器** | 3–5 天 | PawnIO 集成、MSR 模块（APERF/MPERF、THERM_STATUS、RAPL）、AMD SMN 温度、SuperIO 探测 + 风扇 RPM、笔记本 EC / 厂商 WMI 降级链（§3.3.1）、豁免降级逻辑 | Intel 12–15 代 + AMD Zen3–5 上 CPU 温度/功耗/风扇全部可用；HVCI 开启不报错；笔记本上「读不到」时给出准确原因而非 0 |
 | **M2 FPS 引擎与统计** | 3–5 天 | PresentMon Service 客户端（含子进程/自建 ETW 两条备选路径探测）、帧环形缓冲、会话统计、1%/0.1% Low、stutter 计数、CSV 导出 | 与 CapFrameX 同局对比 1% Low 偏差 ≤0.5 FPS；FPS 采集额外 CPU ≤1% |
 | **M3 Overlay 与交互** | 4–7 天 | **RTSS OSD 后端（主路径）**、自绘无注入 Overlay（回退）、布局配置、热键、**PresentMode 降级自检**、RTSS OSD 后端、深色主题、异常提示 UI | 无边框游戏中稳定显示 4 h 无闪烁/掉帧；FSE 下正确提示"需 RTSS 后端"；检测到 `Independent Flip → Composed: Flip` 时能提示并一键关闭 |
 | **M4 打包/兼容/文档** | 3–6 天 | 单 EXE 打包、PawnIO 检测与引导安装、兼容矩阵测试、崩溃转储、README/口径说明 | 干净系统免安装运行；降级路径全部走通并给出准确原因 |

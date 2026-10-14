@@ -1,1 +1,45 @@
+# ── 会话记录与本地临时产物（不属于项目）────────────────────────────────
 /dsh-session-session-69a62a62-4e75-4c08-98ed-31972c172714
+
+# ── 构建产物（docs/release-github.md §5.2 明令禁止入库）──────────────────
+build/
+out/
+*.exe
+*.dll
+*.lib
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.a
+*.o
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+build.ninja
+.ninja_deps
+.ninja_log
+compile_commands.json
+Testing/
+
+# ── 编辑器 / IDE ──────────────────────────────────────────────────────
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.swp
+
+# ── 用户配置与运行期数据（绝不入库）────────────────────────────────────
+config.json
+config.json.bak
+config.json.tmp
+portable.flag
+*.dmp
+*.log
+
+# ── 密钥与证书 ────────────────────────────────────────────────────────
+*.pfx
+*.snk
+*.pem
+*.key
