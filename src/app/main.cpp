@@ -597,10 +597,16 @@ wpm::ui::HudModel BuildHudModel(Collector& collector, const Config& cfg) {
         m.rows.push_back(std::move(row));
     }
 
+    // 页脚说人话：显示了几项、有几项读不到、每轮采样花多少毫秒。
+    // （旧文案「13/50 可用 · 0 缺 · 0.8 ms」把「目录总数」和「缺」当术语用，面板上没人看得懂。）
     char footer[192];
-    // 极简：面板宽度由指标列决定，页脚不许把它撑宽（详细信息看 --probe）
-    std::snprintf(footer, sizeof(footer), "%d/%zu 可用 · %d 缺 · %.1f ms",
-                  okCount, snap.metrics.size(), missingShown, collector.StepAvgMs());
+    if (missingShown > 0) {
+        std::snprintf(footer, sizeof(footer), "%d 项 · %d 项读不到 · 每轮 %.1f ms",
+                      okCount, missingShown, collector.StepAvgMs());
+    } else {
+        std::snprintf(footer, sizeof(footer), "%d 项 · 每轮 %.1f ms", okCount,
+                      collector.StepAvgMs());
+    }
     m.footer = wpm::text::toWide(footer);
     return m;
 }

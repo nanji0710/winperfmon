@@ -232,7 +232,9 @@ void HudWindow::Refresh() {
         }
         int y = 0;
         for (std::size_t i = 0; i < count; ++i) {
-            if (i > 0 && model_.rows[i].newGroup) y += groupGap;
+            // 纵铺同样尊重 itemGapDp（同段相邻项的行距）、groupGapDp（换段时的行距）：
+            // 之前纵铺只用 lineHeight，itemGapDp 被静默忽略，于是「换段的空隙」看起来和其他行距完全不同。
+            if (i > 0) y += model_.rows[i].newGroup ? groupGap : gap;
             cells_[i].y = y;
             cells_[i].valueW = valueW[i];
             cells_[i].unitW = unitW[i];
