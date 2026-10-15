@@ -16,6 +16,7 @@
 #include "config/config.h"
 #include "config/store.h"
 #include "core/text.h"
+#include "fps/fps_provider.h"
 #include "sensors/acpi_thermal.h"
 #include "sensors/adl2.h"
 #include "sensors/cpu_native.h"
@@ -216,6 +217,11 @@ public:
                     // 没放官方模块 / 平台不支持），而不是一句笼统的"需要 Ring0 通道"。
                     ring0Note_ = detail.empty() ? "Ring0 通道不可用" : detail;
                 }
+                if (std::string(p->name()) == "fps" && fps_ != nullptr && !fps_->CaptureReady()) {
+                    // 只有"根本采不了"（没装 PresentMon / 配置关闭）才改写成降级原因；
+                    // "还没开始采"不算失败，别把 fps.* 写成错误状态。
+                    fpsNote_ = fps_->Note();
+                }
                 report += std::string("  ") + p->name() + ": " + (ok ? "就绪" : "不可用");
                 if (!detail.empty()) report += "（" + detail + "）";
                 report += "\n";
@@ -240,6 +246,15 @@ public:
             auto acpi = std::make_unique<wpm::sensors::AcpiThermalProvider>();
             acpi_ = acpi.get();
             providers_.push_back(std::move(acpi));
+        }
+        // FPS 采集（M2）：PresentMon 子进程 + 逐帧 CSV。排在最后是因为它的采样最贵
+        // （要读管道），且它与其它 provider 没有槽位竞争——它是 fps.* 的唯一来源。
+        {
+            auto fps = std::make_unique<wpm::fps::FpsProvider>();
+            fps->SetOptions(cfg.fps);
+            fps->SetDiagnosticOnly(probeMode_);
+            fps_ = fps.get();
+            providers_.push_back(std::move(fps));
         }
         initPending();
         // 未接线的指标统一标注原因，UI 才不会显示成 0
@@ -390,7 +405,9 @@ private:
                     break;
                 case Availability::AvPresentMon:
                     r.status = Status::NeedPresentMon;
-                    r.detail = "需要 PresentMon，M2 接入";
+                    // FPS provider 已接线：PresentMon 没找到 / 还没开始采集时，
+                    // 原因来自它（含找过的路径），而不是一句"需要 PresentMon，M2 接入"。
+                    r.detail = fpsNote_.empty() ? "需要 PresentMon，M2 接入" : fpsNote_;
                     break;
             }
         }
@@ -398,10 +415,13 @@ private:
 
 public:
     // 供 --probe 使用
-    [[nodiscard]] const wpm::sensors::Adl2Provider* Adl() const noexcept { return adl2_; }
-    [[nodiscard]] const wpm::sensors::AcpiThermalProvider* Acpi() const noexcept { return acpi_; }
+    /// --probe 用：诊断模式。目前只影响 FPS provider（不启动 PresentMon 子进程）——
+    /// 一条诊断命令不该顺手在你机器上起进程。
+    void SetProbeMode(bool on) noexcept { probeMode_ = on; }
+    [[nodiscard]] const wpm::sensors::Adl2Provider* Adl() const noexcept { return adl2_; }    [[nodiscard]] const wpm::sensors::AcpiThermalProvider* Acpi() const noexcept { return acpi_; }
     [[nodiscard]] wpm::sensors::CpuRing0Provider* Ring0() const noexcept { return ring0_; }
     [[nodiscard]] const std::string& Ring0Note() const noexcept { return ring0Note_; }
+    [[nodiscard]] wpm::fps::FpsProvider* Fps() const noexcept { return fps_; }
     [[nodiscard]] const std::vector<wpm::sensors::GpuAdapter>& GpuAdapters() const noexcept {
         return gpuAdapters_;
     }
@@ -417,9 +437,12 @@ private:
     int gpuSelected_ = -1;
     std::string gpuNote_;
     std::string ring0Note_;
+    std::string fpsNote_;
+    bool probeMode_ = false;
     wpm::sensors::Adl2Provider* adl2_ = nullptr;         // 不拥有，providers_ 持有
     wpm::sensors::CpuRing0Provider* ring0_ = nullptr;    // 不拥有
     wpm::sensors::AcpiThermalProvider* acpi_ = nullptr;  // 不拥有
+    wpm::fps::FpsProvider* fps_ = nullptr;               // 不拥有
     int64_t startCounter_ = 0;
     std::vector<StageMs> initTimings_;
     double startupMs_ = 0.0;
@@ -639,6 +662,33 @@ void PrintProbe(const Config& cfg, const wpm::config::ConfigPaths& paths,
     if (!collector.Ring0Note().empty())
         std::printf("ring0.unavailableReason=%s\n", collector.Ring0Note().c_str());
 
+    // [fps]：FPS 采集链的自证段。FPS 出问题时（游戏在前台却没有数字）要看这一段的
+    // csvFrames 是不是 0：0 说明根本没采到，不是"帧率恰好为 0"。
+    std::printf("\n[fps]\n");
+    if (auto* fps = collector.Fps()) {
+        const auto d = fps->Probe();
+        std::printf("fps.presentmon=%s\n", d.exePath.empty() ? "(未找到)" : d.exePath.c_str());
+        std::printf("fps.running=%s\n", d.running ? "true" : "false");
+        if (!d.target.empty()) {
+            std::printf("fps.target=%s\n", d.target.c_str());
+            std::printf("fps.targetSource=%s\n", d.targetSource.c_str());
+            std::printf("fps.processId=%u\n", d.processId);
+        }
+        std::printf("fps.csvLines=%llu\n", static_cast<unsigned long long>(d.csvLines));
+        std::printf("fps.csvFrames=%llu\n", static_cast<unsigned long long>(d.csvFrames));
+        std::printf("fps.csvMalformed=%llu\n", static_cast<unsigned long long>(d.csvMalformed));
+        std::printf("fps.skippedBeforeHeader=%llu\n",
+                    static_cast<unsigned long long>(d.skippedBeforeHeader));
+        std::printf("fps.header=%s\n", d.headerNote.c_str());
+        std::printf("fps.ringFrames=%llu\n", static_cast<unsigned long long>(d.ringFrames));
+        std::printf("fps.ringSpanMs=%.0f\n", d.ringSpanMs);
+        if (d.exitCode >= 0) std::printf("fps.exitCode=%d\n", d.exitCode);
+        std::printf("fps.note=%s\n", d.note.c_str());
+        std::printf("fps.locateNote=%s\n", d.locateNote.c_str());
+    } else {
+        std::printf("fps.provider=absent\n");
+    }
+
     std::printf("\n[gpu]\n");
     std::printf("gpu.adapters=%d\n", snap->gpuAdapterCount);
     std::printf("gpu.selected=%d\n", snap->gpuSelectedIndex);
@@ -824,6 +874,7 @@ int wmain(int argc, wchar_t** argv) {
     const Config& cfg = lr.config;
 
     Collector collector;
+    collector.SetProbeMode(probe);
     std::string initReport;
     const bool anyProvider = collector.Init(cfg, initReport);
     MemMark("provider 初始化后");
@@ -878,16 +929,18 @@ int wmain(int argc, wchar_t** argv) {
             Sleep(static_cast<DWORD>(cfg.update.sensorIntervalMs));
             collector.Step();
             auto snap = collector.Latest();
-            std::string cpu = "--", freq = "--", mem = "--";
+            std::string cpu = "--", freq = "--", mem = "--", fps = "--", low = "--";
             const auto cat = MetricCatalog();
             for (size_t i = 0; i < cat.size(); ++i) {
                 if (cat[i].id == "cpu.usage") FormatValue(cat[i], snap->at(i), cfg, cpu);
                 else if (cat[i].id == "cpu.freq.avg") FormatValue(cat[i], snap->at(i), cfg, freq);
                 else if (cat[i].id == "mem.usage") FormatValue(cat[i], snap->at(i), cfg, mem);
+                else if (cat[i].id == "fps.avg") FormatValue(cat[i], snap->at(i), cfg, fps);
+                else if (cat[i].id == "fps.low1") FormatValue(cat[i], snap->at(i), cfg, low);
             }
-            std::printf("[%6.1fs] CPU %s%%  频率 %s MHz  内存 %s%%\n",
+            std::printf("[%6.1fs] CPU %s%%  频率 %s MHz  内存 %s%%  FPS %s（1%% Low %s）\n",
                         static_cast<double>(snap->takenAtMs) / 1000.0, cpu.c_str(), freq.c_str(),
-                        mem.c_str());
+                        mem.c_str(), fps.c_str(), low.c_str());
             std::fflush(stdout);
         }
         // 预算验收证据（docs/winperfmon-dev-plan.md §1）：1 Hz 下"平均采样耗时"直接就是

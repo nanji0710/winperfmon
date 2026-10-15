@@ -288,10 +288,19 @@ SVI 电压解码与越界、每核频率比值与坏差分、Intel 封装温度�
 
 以下是 Ring0 通道**尚未接入**的部分（已完成并真机验收的见 §7）：
 
-- **风扇转速（EC 路径）未接**。`LpcACPIEC.bin` 已经在分发目录里，但**本机（HP ZHAN66 14 G8a）
-  的 EC 风扇寄存器地址未知**：LHM 的 EC 映射表只有 Dell / MSI / ITE 通用几种，没有 HP ZHAN /
-  ProBook G8 代。下一步的取证手段是读本机 DSDT 的 EC `OperationRegion` 字段名（例如
-  `FANT`/`FAN1`/`RPM1`），拿到候选偏移后再用「探测-再信任」四条判据验证。
+- **风扇转速（EC 路径）读通了，但寄存器地址仍未确定**。`LpcACPIEC.bin` 已经在分发目录里，且
+  **只读读通**：`D:\GitHub\winperfmon-dsh-scratch\ecscan.cpp`（scratch 探针，未进仓库）用
+  `ioctl_pio_read/ioctl_pio_write` 在用户态实现 0x66/0x62 的 IBF/OBF 握手，先取
+  `Global\Access_EC` 互斥体，再逐寄存器读 0x00–0xFF：整表 256 个寄存器里只有 4–8 个读失败，
+  说明通道可用。但**本机（HP ZHAN66 14 G8a）的 EC 风扇寄存器地址未知**：LHM 的 EC 映射表只有
+  Dell / MSI / ITE 通用几种，没有 HP ZHAN / ProBook G8 代；HP 厂商 WMI 这条路也走不通 ——
+  `root/hp/instrumentedBIOS` 命名空间存在，但 `HPBIOS_BIOSNumericSensor` 在管理员下查询返回
+  **「不支持」**（该机型没有实现传感器类），所以 §3.3.1 的 F2 层在本机不可用。
+  下一步的取证手段是读本机 DSDT 的 EC `OperationRegion` 字段名（例如 `FANT`/`FAN1`/`RPM1`），
+  拿到候选偏移后再用「探测-再信任」四条判据验证。
+- **EC 读取在满载下会变脆**（实测补充）：16 线程 CPU 满载时，同一批寄存器的等待超时明显增多
+  （累计读失败从每轮 4–8 个涨到几十个）。所以真要接入 EC 时，等待预算必须给足，并且采样线程
+  要提优先级——否则游戏满载时风扇值会比实际更早变成「读不到」。
 - **Super I/O 传感器未接**。本机是笔记本，通常没有独立的 Super I/O 芯片；`LpcIO.bin` 留给台式机。
 - **Intel 电压未接**：各代 SVID 表口径不同，不猜。
 - 写操作（EC 写、PWM 调速）**一律不做**：winperfmon 是监控工具，只读。

@@ -248,6 +248,8 @@
 - **ferrisetw**（[n4r1b/ferrisetw](https://github.com/n4r1b/ferrisetw)，MIT，Rust）：日后若自研 ETW 消费者可参考其会话/回调封装。
 - **不采用**：Special K（[SpecialKO/SpecialK](https://github.com/SpecialKO/SpecialK)，GPL-3.0）—— 仅借用其"MPO plane 检测"思路，代码有 GPL 传染性，不可并入。
 
+> **实现现状（M2 已完成的那一半）**：解析器、统计口径与子进程采集链路已落地并通过 71 项单测与夹具端到端验证；**尚未验证**的是真机 PresentMon + 真游戏下的 1% Low 对比与 CPU 开销。口径速查、容错清单、诚实边界与"为什么选子进程 CSV 而不是 SDK"写在 `docs/fps-presentmon.md`，本节仍是**设计与数值的权威**；两者冲突时以本节为准并回头修正实现。
+
 ---
 
 ## 4. Ring0 访问与驱动方案（本项目的最大风险项）
@@ -362,7 +364,10 @@
 >
 > **两条产品级结论（已同步进 §3.3.1 与 §4）**：①**Ring0 通道必须提权** —— PawnIO 设备对象 ACL 只授权 SYSTEM 与 Administrators，非管理员只会拿到 `ring0.unavailableReason=打不开 PawnIO 设备（错误 5（拒绝访问。））`，免驱路径不受影响；②**SMN 温度是 Tctl 口径**，同负载下比 ADL2 高 10–20 °C，`cpu.temp.package` 的 detail 必须写明、不可直接比较。
 >
-> **仍未开始的**：**每核**温度与核心电压（通道已实现：AMD SMN 每核、SVI2 —— 但本机 SVI2 恒为 0，如实判「不可用」；Intel 侧只有单测口径、未在真机实测）、RAPL 每核功耗、Super I/O 与风扇 RPM、笔记本 EC 与厂商 WMI 链。
+> **仍未开始的**：**每核**温度与核心电压（通道已实现：AMD SMN 每核、SVI2 —— 但本机 SVI2 恒为 0，如实判「不可用」；Intel 侧只有单测口径、未在真机实测）、RAPL 每核功耗、Super I/O 与风扇 RPM、笔记本 EC 与厂商 WMI 链（EC 只读通道已跑通，寄存器地址仍未确定）。
+>
+> **M2 进度注（2026-10-15）**：M2 的**免驱可测部分已完成**（用户选择先做这一半，不等 PresentMon 到手）——PresentMon 逐帧 CSV 解析器（列按名字认、CRLF/BOM/引号/任意分片/末行无换行全部容错、表头缺失 200 行后致命）+ 帧统计（**调和平均**、1% / 0.1% Low **两条口径都算**、无魔数卡顿率、异常帧与 Dropped 分开计数、定长环形缓冲）+ 子进程采集链路（`PresentMon.exe --output_stdout`，stdout+stderr 同管道；跟随前台进程；`--v2_metrics` 失败自动去掉重试一次；3 s 无新帧判 `Stale`；**`--probe` 不启动子进程**）。单测从 43 增至 **71 passed / 0 failed**。夹具端到端（scratch 里的假 PresentMon 冒充 `PresentMon.exe`）：`--watch` 打印 `FPS 59（1% Low 35）`，逐源 `fps 0.77 ms`、工作集 13.10 MB；`--once` 汇总因此变为 **可用 13 / 本机无 20 / 待接入通道 17 / 错误 0**（10 个 `fps.*` 改由 FPS provider 认领，本机没有 PresentMon 故判「本机无」并列出找过的路径 —— **与上一条 13/10/27 口径不同，不得混用**）。
+> **M2 尚未验证的**（需要真 PresentMon + 真游戏，本机两者都没有）：与 CapFrameX 同局对比 1% Low 偏差 ≤0.5 FPS、FPS 采集额外 CPU ≤1%、`--v2_metrics` 自动重试路径。设计与诚实边界见 `docs/fps-presentmon.md`，验收步骤见 `docs/build-and-run.md` §8。
 
 ---
 

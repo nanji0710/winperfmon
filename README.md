@@ -3,7 +3,7 @@
 > 产品名 **winperfmon**（已定：EXE `winperfmon.exe`、配置目录 `%APPDATA%\winperfmon\`、仓库名 `winperfmon`）。
 > 目标：Windows 极致轻量化性能监控工具 —— CPU/GPU 频率、功耗、温度，风扇转速，FPS 与 1% Low FPS。
 >
-> **本集为 5 份设计文档 + 3 份证据台账 + 1 份构建手册**（2026-10，全部在 `docs/`）。本文件是仓库根 README，同时充当文档索引。
+> **本集为 5 份设计文档 + 3 份证据台账 + 2 份手册（构建验收、FPS 采集）**（2026-10，全部在 `docs/`）。本文件是仓库根 README，同时充当文档索引。
 > 精简前的 14 份文档完整快照保存在 git 分支 `docs-archive`（提交 `6fca7fe`）里，恢复任一文件：
 > `git show 6fca7fe:docs/<文件名> > docs/<文件名>`。
 
@@ -12,8 +12,8 @@
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | P0 | 开发方案（技术路线、驱动方案、里程碑） | ✅ 完成（`docs/winperfmon-dev-plan.md`） |
-| P1 | 设计文档集：配置数据结构与接口、AMD 支持、UI 设置、发布合规 | ✅ 完成（`docs/` 5 份设计文档 + 3 份证据台账 + 1 份构建手册） |
-| P2 | 编码实现（M0 骨架 → M1 传感器 → M2 FPS → M3 Overlay → M4 打包） | 🔵 进行中：**M0 已完成**（CPU 频率/占用 + 内存 + 配置系统 + **43 个单测全绿**）；**M1 免驱部分已完成**（AMD ADL2 PM 表 + **原生 CPU 通道** + 惰性 ACPI 热区兜底，本机 50 项里 **13 项可用**）；**M1 的 Ring0 部分已完成真机验收**（PawnIO 2.2.0、管理员运行：每核频率 16/16 核、SMN 封装温度、MSR 封装能耗并与 ADL2 互证，见 `docs/ring0-pawnio.md` §7；Intel 侧仅单测口径覆盖，未在真机实测）；**Ring0 通道必须以管理员身份运行**（PawnIO 设备对象 ACL 只授权 SYSTEM 与 Administrators），免驱默认路径不受影响、无需提权；**核心电压在本机不可用** —— SVI2 的 TFN 与两个遥测平面整轮恒为 `0x00000000`，`0` 不是 0 V、更不是 1.55 V，如实判为读不到 |
+| P1 | 设计文档集：配置数据结构与接口、AMD 支持、UI 设置、发布合规 | ✅ 完成（`docs/` 5 份设计文档 + 3 份证据台账 + 2 份手册） |
+| P2 | 编码实现（M0 骨架 → M1 传感器 → M2 FPS → M3 Overlay → M4 打包） | 🔵 进行中：**M0 已完成**（CPU 频率/占用 + 内存 + 配置系统 + **71 个单测全绿**）；**M1 免驱部分已完成**（AMD ADL2 PM 表 + **原生 CPU 通道** + 惰性 ACPI 热区兜底，本机 50 项里 **13 项可用**）；**M1 的 Ring0 部分已完成真机验收**（PawnIO 2.2.0、管理员运行：每核频率 16/16 核、SMN 封装温度、MSR 封装能耗并与 ADL2 互证，见 `docs/ring0-pawnio.md` §7；Intel 侧仅单测口径覆盖，未在真机实测）；**Ring0 通道必须以管理员身份运行**（PawnIO 设备对象 ACL 只授权 SYSTEM 与 Administrators），免驱默认路径不受影响、无需提权；**核心电压在本机不可用** —— SVI2 的 TFN 与两个遥测平面整轮恒为 `0x00000000`，`0` 不是 0 V、更不是 1.55 V，如实判为读不到；**M2 的免驱可测部分已完成**（PresentMon 逐帧 CSV 解析 + 帧统计口径 + 子进程采集链路，见 `docs/fps-presentmon.md`），本机未装真 PresentMon，故与 CapFrameX 的 1% Low 对比验收待做 |
 
 **M0 骨架已可构建运行**：`build\winperfmon.exe` 约 1.45 MB（预算 ≤ 5 MB），零第三方运行时依赖。
 **M1 免驱遥测已接入**：AMD 平台无需 Ring0、无需管理员即可读到 CPU 温度/封装功耗/SoC 功耗、**CPU 平均频率（ADL2 `CLK_CPUCLK`）与 CPU 占用（原生 `NtQuerySystemInformation`）**，以及 GPU 频率、占用、温度；ACPI 热区作为**惰性**兜底（只在真要读温度时才枚举）。**默认路径完全不碰 Windows 性能计数器表（perflib）** —— 那笔 4.3 MB / 约 280–300 ms 的一次性开销来自计数器表本身（谁先碰谁付账且不归还），因此 PDH 退为末位降级，详见 `docs/winperfmon-dev-plan.md` §3.1/§6 与 `docs/amd-facts.md` §9。
@@ -25,8 +25,9 @@
 | 常驻内存 | ≤ 15 MB | **工作集 11.88 MB / 私有 2.46 MB / 峰值 12.07 MB** | 工作集 18.04 MB / 私有 6.70 MB |
 | 冷启动 | ≤ 300 ms | **45.8 ms**（首帧 0.91 ms） | 435.7 ms（`stage.cpu.pdh = 381.2`） |
 | 采样成本 | ≤ 0.3% | **0.92 ms/轮**（逐源：`adl2 0.76`、`cpu.native 0.13`、`memory 0.02`、`acpi-thermal 0.00`） | 23.65 ms/轮（`cpu.pdh 0.48`） |
-| `--once` 可用项 | — | **13 / 50**（本机无 10 / 待接入通道 27 / 错误 0） | — |
-构建与验收步骤见 `docs/build-and-run.md`（§6 免驱、§7 Ring0 提权验收）；实测证据见 `docs/amd-facts.md`。**Ring0 提权实测（PawnIO 2.2.0，管理员运行）**：整轮采样 **平均 1.66 ms/次、最大 3.34 ms/次**（25 次），工作集 **11.96 MB** / 私有 **2.47 MB** / 峰值 **12.05 MB**，`startupMs = 43.4 ms`、逐源 `cpu.ring0 0.65 ms`；`--all` 汇总 **可用 13 / 本机无 12 / 待接入通道 25 / 错误 0（合计 50）**；单测 **43 passed / 0 failed**。
+| `--once` 可用项 | — | **13 / 50**（本机无 20 / 待接入通道 17 / 错误 0） | — |
+| FPS 采集（M2，夹具链路） | ≤ 1% CPU | **0.77 ms/轮**（含 PresentMon 子进程管道消费与统计；内存 13.10 MB 工作集 / 3.84 MB 私有） | — |
+构建与验收步骤见 `docs/build-and-run.md`（§6 免驱、§7 Ring0 提权验收）；实测证据见 `docs/amd-facts.md`。**Ring0 提权实测（PawnIO 2.2.0，管理员运行）**：整轮采样 **平均 1.66 ms/次、最大 3.34 ms/次**（25 次），工作集 **11.96 MB** / 私有 **2.47 MB** / 峰值 **12.05 MB**，`startupMs = 43.4 ms`、逐源 `cpu.ring0 0.65 ms`；`--all` 汇总 **可用 13 / 本机无 12 / 待接入通道 25 / 错误 0（合计 50）**；单测 **71 passed / 0 failed**（含 8 个 Ring0 解码口径用例）。
 
 ```cmd
 call tools\env.cmd
@@ -35,7 +36,7 @@ cmake --build build
 build\winperfmon.exe --selftest
 ```
 
-## 二、文档清单（5 份设计文档 + 3 份证据台账 + 1 份构建手册）
+## 二、文档清单（5 份设计文档 + 3 份证据台账 + 2 份手册）
 
 | 文档 | 内容 | 状态 |
 |---|---|---|
@@ -47,7 +48,8 @@ build\winperfmon.exe --selftest
 | `docs/adl2-facts.md` | **ADL2 传感器索引表的原始核实记录**（`docs/amd-facts.md` §9 的底稿）：跨 SDK 版本一致性、索引 0–45 语义表、支持性判定的更正公告、缩放与结构体布局。**注意开头 §0 更正公告**：原稿把"采样值非零"当成"驱动支持" | ✅ 核实完成（373 行；§0 更正已生效） |
 | `docs/release-github.md` | 发布与许可合规：MIT、第三方合规动作、随包分发 PawnIO（GPL-2.0）/ 模块（LGPL-2.1）、仓库与 CI、发布物、检查清单、隐私要点、芯片表贡献流程 | ✅ 设计稿（`wil` 已按 §6.1-1 移出依赖表） |
 | `docs/laptop-telemetry-facts.md` | **笔记本电脑遥测证据综述**（证据，非设计）：ACPI 热区、EC 直连、厂商 WMI 全矩阵（HP / Dell / Lenovo / ASUS / MSI / Acer / Gigabyte / Clevo / Surface / Framework）、可借鉴开源实现、分层回退链建议。**主方案 §3.3.1 的依据**，逐条带 URL 与 `repo:path:line` | ✅ 核实完成（444 行） |
-| `docs/build-and-run.md` | **构建与验收手册**：便携工具链（GCC 16.2 / CMake 4.4 / Ninja）、构建命令、CLI 用法与覆盖项、单测范围（**43 passed / 0 failed**）、本机 M0/M1 验收记录、**免驱性能验收表**（内存 11.88 MB / 冷启动 45.8 ms / 整轮 0.92 ms / 可用 13 项）与 **§7 Ring0 提权验收**（PawnIO 2.2.0：每核 16/16、SMN 温度、`--all` 13/12/25/0、整轮 1.66 ms、工作集 11.96 MB） | ✅ M0 + M1 免驱 + M1 Ring0 完成（含性能验收） |
+| `docs/build-and-run.md` | **构建与验收手册**：便携工具链（GCC 16.2 / CMake 4.4 / Ninja）、构建命令、CLI 用法与覆盖项、单测范围（**71 passed / 0 failed**）、本机 M0/M1 验收记录、**免驱性能验收表**（内存 11.88 MB / 冷启动 45.8 ms / 整轮 0.92 ms / 可用 13 项）、**§7 Ring0 提权验收**（PawnIO 2.2.0：每核 16/16、SMN 温度、`--all` 13/12/25/0、整轮 1.66 ms、工作集 11.96 MB）与 **§8 M2 验收**（夹具链路 FPS 端到端） | ✅ M0 + M1 免驱 + M1 Ring0 + M2 免驱可测部分 |
+| `docs/fps-presentmon.md` | **M2：FPS 采集**：四条路径取舍（为何选子进程 CSV 而非 SDK/自建 ETW/注入）、三条统计口径（调和平均 / 1% Low 两条口径与 `-1e-9` 的由来 / 无魔数卡顿率）、异常帧与 Dropped 规则、CSV 解析容错清单、采集链路（定位顺序 / 跟随前台 / `--v2_metrics` 重试 / 冻结检测 / `--probe` 不起进程）、**诚实边界**（已验证 vs 未验证）、指标口径速查 | 🔵 代码就绪、夹具端到端通过；真机 PresentMon + 真游戏验收待做 |
 | `docs/ring0-pawnio.md` | **Ring0 通道（PawnIO）**：为什么必须借助驱动、**设备 ACL 导致的必须提权结论**（错误 5 的根因）、GPL-2.0 例外与 LGPL-2.1 模块的合规边界、设备与 IOCTL 常量、模块函数表、AMD SMN/MSR 与 Intel MSR 常量与解码（含 **SVI2 电压在本机不可用**、**SMN 温度是 Tctl 口径**、MSR 封装能耗与 ADL2 互证）、每核频率为什么用"跨轮差分"、反伪造规则、**真机验收记录**、尚未做的部分（EC 风扇 / Super I/O / 每核温度与电压） | ✅ 真机验收通过（PawnIO 2.2.0，**需管理员**；本机核心电压读不到，如实报「不可用 + 原因」） |
 | `README.md` | 本文：索引 + 决策状态 + 开放问题汇总 + 术语 | ✅ |
 
@@ -58,6 +60,7 @@ build\winperfmon.exe --selftest
 3. `docs/ui-settings.md`（同一套设置的用户可见行为）
 4. `docs/amd-cpu.md` → 配套证据 `docs/amd-facts.md`（其 §9 的底稿是 `docs/adl2-facts.md`）
 5. `docs/release-github.md`（发布与合规）
+6. `docs/build-and-run.md`（怎么构建、怎么验收）→ `docs/ring0-pawnio.md`、`docs/fps-presentmon.md`（两条采集链路的实现与诚实边界）
 
 ## 四、决策状态
 
