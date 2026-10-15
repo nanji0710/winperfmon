@@ -13,6 +13,15 @@ constexpr std::string_view kGpuBusyCol = "MsGPUBusy";
 constexpr std::string_view kDroppedCol = "Dropped";
 constexpr std::string_view kPresentModeCol = "PresentMode";
 
+// PresentMon 2.x 的 `--v2_metrics` 换了一套列名（实测 2.6.0 表头：
+// Application,ProcessID,SwapChainAddress,PresentRuntime,SyncInterval,PresentFlags,AllowsTearing,
+// PresentMode,CPUStartTime,FrameTime,CPUBusy,CPUWait,GPULatency,GPUTime,GPUBusy,GPUWait,...）。
+// 三种名字必须都认：只认 v1 名字的话，对着真实的 2.x 输出会一行都解不出来
+// （夹具测试用的是 v1 名字，正是它把这个 bug 藏住了）。
+constexpr std::string_view kFrameTimeColV2 = "FrameTime";
+constexpr std::string_view kCpuBusyColV2 = "CPUBusy";
+constexpr std::string_view kGpuBusyColV2 = "GPUBusy";
+
 /// 表头之前允许出现多少行横幅/警告。超过这个数说明对方根本不是 PresentMon 的逐帧输出，
 /// 宁可报错也别装作在采集（用户会以为 FPS 是 0 是游戏的问题）。
 constexpr uint64_t kMaxLinesBeforeHeader = 200;
@@ -98,11 +107,20 @@ bool PresentMonCsvParser::ParseHeaderLine(const std::string& line) {
         TrimInPlace(&f);
         if (f.size() >= 2 && f.front() == '"' && f.back() == '"') f = f.substr(1, f.size() - 2);
         const int idx = static_cast<int>(i);
-        if (f == kFrameTimeCol) columns_.frameTime = idx;
-        else if (f == kCpuBusyCol) columns_.cpuBusy = idx;
-        else if (f == kGpuBusyCol) columns_.gpuBusy = idx;
-        else if (f == kDroppedCol) columns_.dropped = idx;
-        else if (f == kPresentModeCol) columns_.presentMode = idx;
+        if (f == kFrameTimeCol || f == kFrameTimeColV2) {
+            columns_.frameTime = idx;
+            if (f == kFrameTimeColV2) columns_.v2Names = true;
+        } else if (f == kCpuBusyCol || f == kCpuBusyColV2) {
+            columns_.cpuBusy = idx;
+            if (f == kCpuBusyColV2) columns_.v2Names = true;
+        } else if (f == kGpuBusyCol || f == kGpuBusyColV2) {
+            columns_.gpuBusy = idx;
+            if (f == kGpuBusyColV2) columns_.v2Names = true;
+        } else if (f == kDroppedCol) {
+            columns_.dropped = idx;
+        } else if (f == kPresentModeCol) {
+            columns_.presentMode = idx;
+        }
     }
     columns_.headerFields = static_cast<int>(fields.size());
     return columns_.frameTime >= 0;
@@ -163,18 +181,19 @@ bool PresentMonCsvParser::Feed(std::string_view chunk, std::vector<FrameSample>*
         if (!headerSeen_) {
             // 表头之前可能有 PresentMon 的警告/横幅行，跳过直到认出表头
             std::string_view probe = clean;
-            if (probe.find(kFrameTimeCol) == std::string_view::npos) {
+            if (probe.find(kFrameTimeCol) == std::string_view::npos &&
+                probe.find(kFrameTimeColV2) == std::string_view::npos) {
                 if (++skippedBeforeHeader_ > kMaxLinesBeforeHeader) {
                     if (error) {
                         *error = "前 " + std::to_string(kMaxLinesBeforeHeader) +
-                                 " 行里都没有 MsBetweenPresents 列，这不像是 PresentMon 的逐帧输出";
+                                 " 行里都没有 MsBetweenPresents / FrameTime 列，这不像是 PresentMon 的逐帧输出";
                     }
                     return false;
                 }
                 continue;
             }
             if (!ParseHeaderLine(std::string(clean))) {
-                if (error) *error = "PresentMon CSV 表头里没有 MsBetweenPresents 列";
+                if (error) *error = "PresentMon CSV 表头里既没有 MsBetweenPresents（1.x）也没有 FrameTime（2.x）列";
                 return false;
             }
             headerSeen_ = true;
@@ -205,7 +224,8 @@ void PresentMonCsvParser::Finish(std::vector<FrameSample>* out) {
     if (clean.empty()) return;
     ++lines_;
     if (!headerSeen_) {
-        if (clean.find(kFrameTimeCol) == std::string_view::npos) {
+        if (clean.find(kFrameTimeCol) == std::string_view::npos &&
+            clean.find(kFrameTimeColV2) == std::string_view::npos) {
             ++skippedBeforeHeader_;
             return;
         }
@@ -224,15 +244,19 @@ void PresentMonCsvParser::Finish(std::vector<FrameSample>* out) {
 
 std::string PresentMonCsvParser::HeaderNote() const {
     if (!headerSeen_) return "(未读到表头)";
+    // 如实回显实际用到的列名：2.x 的 --v2_metrics 与 1.x 是两套名字，
+    // 排障时「以为读的是 MsBetweenPresents，其实读的是 FrameTime」这种误会代价很高。
+    const bool v2 = columns_.v2Names;
     std::string note;
+    note += v2 ? "v2:" : "v1:";
     auto add = [&note](std::string_view name, int col) {
         if (col < 0) return;
-        if (!note.empty()) note += ",";
+        note += ",";
         note.append(name);
     };
-    add(kFrameTimeCol, columns_.frameTime);
-    add(kCpuBusyCol, columns_.cpuBusy);
-    add(kGpuBusyCol, columns_.gpuBusy);
+    add(v2 ? kFrameTimeColV2 : kFrameTimeCol, columns_.frameTime);
+    add(v2 ? kCpuBusyColV2 : kCpuBusyCol, columns_.cpuBusy);
+    add(v2 ? kGpuBusyColV2 : kGpuBusyCol, columns_.gpuBusy);
     add(kDroppedCol, columns_.dropped);
     add(kPresentModeCol, columns_.presentMode);
     return note;

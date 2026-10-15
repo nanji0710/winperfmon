@@ -218,3 +218,32 @@ WPM_TEST(presentmon_feeds_framestats_end_to_end) {
     WPM_CHECK_NEAR(st.avgFps, 100000.0 / (99.0 * 10.0 + 50.0), 1e-9);
     WPM_CHECK_NEAR(st.lowFps, 1000.0 / 50.0, 1e-9);  // k = 1 → 最差那一帧
 }
+
+// PresentMon 2.x 的 --v2_metrics 用的是另一套列名（下面是实测 2.6.0 的表头，进程名与 PID 已替换）。
+// 这个用例存在的唯一理由是：真机测试时发现夹具一直用 1.x 列名 → 71 个单测全绿 → 对着真实的
+// 2.6.0 输出却一行都解不出来。夹具只能证明「我们的口径自洽」，不能证明「我们认对了别人的输出」。
+const char* kV2Csv =
+    "Application,ProcessID,SwapChainAddress,PresentRuntime,SyncInterval,PresentFlags,AllowsTearing,"
+    "PresentMode,CPUStartTime,FrameTime,CPUBusy,CPUWait,GPULatency,GPUTime,GPUBusy,GPUWait,"
+    "DisplayLatency,DisplayedTime,AnimationError,AnimationTime,MsFlipDelay,AllInputToPhotonLatency,"
+    "ClickToPhotonLatency\n"
+    "fixture.exe,4242,0x1,DXGI,0,0,0,Composed: Flip,30.9330,16.6670,3.1000,0.3311,30.9371,0.4213,"
+    "8.2000,0.0000,40.7827,33.3094,NA,30.9330,NA,NA,NA\n"
+    "fixture.exe,4242,0x1,DXGI,0,0,0,Hardware: Independent Flip,47.6000,16.7000,3.0000,0.3691,"
+    "30.2192,0.1442,8.0000,0.0000,43.0303,33.3358,-2.2476,47.6000,NA,NA,NA\n";
+
+WPM_TEST(presentmon_v2_metrics_columns_are_recognised) {
+    PresentMonCsvParser parser;
+    const std::vector<FrameSample> frames = ParseAll(kV2Csv, &parser);
+    WPM_CHECK_EQ(frames.size(), static_cast<size_t>(2));
+    WPM_CHECK_NEAR(frames[0].frameTimeMs, 16.6670, 1e-9);
+    WPM_CHECK_NEAR(frames[0].cpuBusyMs, 3.1000, 1e-9);
+    WPM_CHECK_NEAR(frames[0].gpuBusyMs, 8.2000, 1e-9);
+    WPM_CHECK_NEAR(frames[1].frameTimeMs, 16.7000, 1e-9);
+    WPM_CHECK(frames[0].presentMode == "Composed: Flip");
+    WPM_CHECK(frames[1].presentMode == "Hardware: Independent Flip");
+    // 2.x 的 v2 输出里没有 Dropped 列：解析器必须容忍，而不是把第 0 列当成 Dropped
+    WPM_CHECK(parser.columns().dropped < 0);
+    WPM_CHECK(parser.columns().v2Names);
+    WPM_CHECK(parser.HeaderNote().rfind("v2:", 0) == 0);
+}

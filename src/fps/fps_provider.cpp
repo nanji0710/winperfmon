@@ -18,6 +18,8 @@ using wpm::sensors::Snapshot;
 using wpm::sensors::Status;
 
 constexpr uint64_t kStartRetryIntervalMs = 3000;  ///< 启动失败后的重试间隔（别每 0.5 s 试一次）
+/// 子进程跑了这么久还没有一行 CSV，就在降级文案里给出排查方向（PresentMon 静默失败很难猜）
+constexpr uint64_t kNoOutputHintSeconds = 10;
 constexpr uint64_t kFrameStaleMs = 3000;          ///< 超过这么久没有新帧就认为采集停了
 constexpr size_t kMaxChunk = 64 * 1024;
 
@@ -209,8 +211,17 @@ bool FpsProvider::StartCapture(const std::string& target, const char* source, st
 
     // 参数顺序按 PresentMon 官方文档；--v2_metrics 是 2.x 的写法，1.x 会报未知参数，
     // 因此失败后会在 PumpPipe 里去掉它重来一次（见 retriedWithoutV2_）。
+    // --exclude_dropped：只要真正上屏的帧。2.x 的 --v2_metrics 输出里**没有** Dropped 列
+    // （实测 2.6.0 表头没有该字段），靠 PresentMon 自己过滤比在 CSV 里猜标志位可靠。
+    // --session_name winperfmon：不占默认的 "PresentMon" 会话名，避免和 CapFrameX 等工具互踢。
+    // --stop_existing_session：上一次被强杀（Kill/Ctrl+C）会留下同名会话一直处于 Running，
+    //   此后每次抓取都**静默拿到 0 帧**——本机实测踩过这个坑（抓不到任何数据，stderr 里只有
+    //   一句与非管理员相关的警告）。注意不能用 --terminate_existing_session：官方语义是
+    //   「停掉已有会话然后退出」，那样我们永远采不到东西。
     std::wstring cmdline = L"\"" + wpm::text::toWide(pm_.path) + L"\" --process_name " +
-                           wpm::text::toWide(target) + L" --output_stdout --no_console_stats";
+                           wpm::text::toWide(target) +
+                           L" --output_stdout --no_console_stats --exclude_dropped"
+                           L" --session_name winperfmon --stop_existing_session";
     if (!retriedWithoutV2_) cmdline += L" --v2_metrics";
     cmdline += L" --terminate_on_proc_exit";
 
@@ -387,7 +398,19 @@ void FpsProvider::WriteMetrics(Snapshot& snap) {
     const FrameStats stLow01 = ring_.Compute(low01);
 
     if (!haveFrames) {
-        const std::string why = note_.empty() ? "还没有帧数据（PresentMon 未启动或游戏未在前台）" : note_;
+        std::string why = note_.empty() ? "还没有帧数据（PresentMon 未启动或游戏未在前台）" : note_;
+        // 「进程在跑、表头却一行都没读到」是这套链路最难查的状态：PresentMon 是**静默**失败的
+        // （stderr 只有一句跟非管理员有关的常规警告）。这里如实说清「等了多久、一行都没有」，
+        // 并把本机实测过的两个成因摆出来，避免用户对着「FPS --」干猜。
+        if (running_ && lastStartAttemptTick_ != 0) {
+            const uint64_t waited = (GetTickCount64() - lastStartAttemptTick_) / 1000;
+            if (waited >= kNoOutputHintSeconds && parser_.lines() == 0) {
+                why += "；PresentMon 已运行 " + std::to_string(waited) +
+                       " 秒但一行 CSV 都没输出——常见成因：残留的 ETW 会话（本机实测过一次，"
+                       "已用 --session_name winperfmon --stop_existing_session 规避）、"
+                       "或需要以管理员身份运行（PresentMon 对非管理员只能跟踪同账户的长进程）";
+            }
+        }
         for (size_t slot : slots_) setReading(slot, 0.0, Status::Unavailable, why);
         return;
     }

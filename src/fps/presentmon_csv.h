@@ -30,6 +30,9 @@ public:
         int dropped = -1;
         int presentMode = -1;
         int headerFields = 0;
+        /// true = 表头用的是 PresentMon 2.x `--v2_metrics` 的列名（FrameTime/CPUBusy/GPUBusy）。
+        /// 只影响回显与排障文案：两种列名的数据语义相同。
+        bool v2Names = false;
     };
 
     PresentMonCsvParser() = default;
