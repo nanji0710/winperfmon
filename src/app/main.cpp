@@ -20,6 +20,7 @@
 #include "sensors/adl2.h"
 #include "sensors/cpu_native.h"
 #include "sensors/cpu_pdh.h"
+#include "sensors/cpu_ring0.h"
 #include "sensors/gpu_enum.h"
 #include "sensors/memory.h"
 #include "sensors/sensor.h"
@@ -191,6 +192,14 @@ public:
             adl2_ = adl.get();
             providers_.push_back(std::move(adl));
         }
+        // Ring0（PawnIO）：每核频率、核心电压要靠它；封装温度/功耗只在 ADL2 缺席时兜底
+        // （provider 内部用 taken() 让位，所以排在 ADL2 后面即自动让位）。
+        {
+            auto ring0 = std::make_unique<wpm::sensors::CpuRing0Provider>();
+            ring0->SetIntervalMs(static_cast<uint32_t>(cfg.update.sensorIntervalMs));
+            ring0_ = ring0.get();
+            providers_.push_back(std::move(ring0));
+        }
 
         bool any = false;
         size_t inited = 0;
@@ -202,6 +211,11 @@ public:
                 const bool ok = p->Init(detail);
                 initTimings_.push_back({p->name(), NowMs() - t0});
                 MemMark("provider:" + std::string(p->name()));
+                if (!ok && std::string(p->name()) == "cpu.ring0") {
+                    // Ring0 没打开时，所有 AvRing0 指标的原因都应指向真正的原因（没装驱动 /
+                    // 没放官方模块 / 平台不支持），而不是一句笼统的"需要 Ring0 通道"。
+                    ring0Note_ = detail.empty() ? "Ring0 通道不可用" : detail;
+                }
                 report += std::string("  ") + p->name() + ": " + (ok ? "就绪" : "不可用");
                 if (!detail.empty()) report += "（" + detail + "）";
                 report += "\n";
@@ -355,7 +369,11 @@ private:
                     break;
                 case Availability::AvRing0:
                     r.status = Status::NeedDriver;
-                    r.detail = "需要 Ring0 通道（PawnIO），M1 接入";
+                    // Ring0 通道已经实现（PawnIO + 官方模块），所以原因要说清是"通道没打开"，
+                    // 而不是"还没做"：具体状态见 --probe 的 [ring0] 段。
+                    r.detail = ring0Note_.empty()
+                                   ? "需要 Ring0 通道（PawnIO 驱动 + 官方模块），状态见 --probe 的 [ring0] 段"
+                                   : ring0Note_;
                     break;
                 case Availability::AvVendorOrRing0:
                     r.status = Status::NeedDriver;
@@ -382,6 +400,8 @@ public:
     // 供 --probe 使用
     [[nodiscard]] const wpm::sensors::Adl2Provider* Adl() const noexcept { return adl2_; }
     [[nodiscard]] const wpm::sensors::AcpiThermalProvider* Acpi() const noexcept { return acpi_; }
+    [[nodiscard]] wpm::sensors::CpuRing0Provider* Ring0() const noexcept { return ring0_; }
+    [[nodiscard]] const std::string& Ring0Note() const noexcept { return ring0Note_; }
     [[nodiscard]] const std::vector<wpm::sensors::GpuAdapter>& GpuAdapters() const noexcept {
         return gpuAdapters_;
     }
@@ -396,7 +416,9 @@ private:
     int gpuSelectedCfg_ = -1;
     int gpuSelected_ = -1;
     std::string gpuNote_;
+    std::string ring0Note_;
     wpm::sensors::Adl2Provider* adl2_ = nullptr;         // 不拥有，providers_ 持有
+    wpm::sensors::CpuRing0Provider* ring0_ = nullptr;    // 不拥有
     wpm::sensors::AcpiThermalProvider* acpi_ = nullptr;  // 不拥有
     int64_t startCounter_ = 0;
     std::vector<StageMs> initTimings_;
@@ -537,7 +559,7 @@ std::string ReadOsBuild() {
 // release-github.md §11：--probe 输出，key=value 行式、UTF-8 无 BOM、段序固定
 void PrintProbe(const Config& cfg, const wpm::config::ConfigPaths& paths,
                 const std::shared_ptr<const Snapshot>& snap, const std::string& initReport,
-                const Collector& collector) {
+                Collector& collector) {
     std::printf("probeVersion=1\n");
     std::printf("appVersion=%s\n", WPM_VERSION_STRING);
     std::printf("osBuild=%s\n", ReadOsBuild().c_str());
@@ -545,7 +567,7 @@ void PrintProbe(const Config& cfg, const wpm::config::ConfigPaths& paths,
     const bool pawnio = DetectPawnIo();
     std::printf("pawnio=%s\n", pawnio ? "present" : "absent");
     std::printf("hvci=%s\n", DetectHvci() ? "on" : "off");
-    std::printf("ring0Backend=%s\n", pawnio ? "PawnIO（模块在 M1 接入）" : "none");
+    std::printf("ring0Backend=%s\n", pawnio ? "PawnIO" : "none");
     std::printf("\n[system]\n");
 
     auto regStr = [](HKEY root, const wchar_t* sub, const wchar_t* name) -> std::string {
@@ -575,6 +597,41 @@ void PrintProbe(const Config& cfg, const wpm::config::ConfigPaths& paths,
     std::printf("\n[superio]\n");
     std::printf("lpc.detected=%d\n", 0);
     std::printf("note=Super I/O 探测（LPC 0x2E/0x2F、0x4E/0x4F）需要 Ring0，M1 接入；笔记本机型通常无独立 Super I/O\n");
+
+    // [ring0]：PawnIO 通道的自证段。没有它，用户看到"需要 Ring0 通道"时无从判断卡在哪一步
+    // （驱动没装 / 服务没起 / 模块文件没放对 / 寄存器读不出来）。
+    std::printf("\n[ring0]\n");
+    if (auto* r0 = collector.Ring0()) {
+        const auto d = r0->Probe();
+        std::printf("ring0.vendor=%s\n", d.amd ? "AMD" : "Intel");
+        std::printf("ring0.device=%s\n", d.devicePath.empty() ? "(未打开)" : d.devicePath.c_str());
+        std::printf("ring0.driverVersion=%s\n",
+                    d.driverVersion.empty() ? "(未读到)" : d.driverVersion.c_str());
+        std::printf("ring0.module=%s\n", d.moduleLoaded ? "loaded" : "not-loaded");
+        if (!d.modulePath.empty()) std::printf("ring0.modulePath=%s\n", d.modulePath.c_str());
+        if (!d.moduleNote.empty()) std::printf("ring0.moduleNote=%s\n", d.moduleNote.c_str());
+        if (d.smnTempOk) {
+            std::printf("ring0.smn.tempC=%.1f\n", d.smnTempC);
+            std::printf("ring0.smn.tempRaw=0x%08X\n", d.smnTempRaw);
+        }
+        if (d.voltageOk) {
+            std::printf("ring0.smn.coreVoltageV=%.4f\n", d.voltageV);
+            std::printf("ring0.smn.voltageOffset=0x%05X\n", d.voltageOffset);
+            std::printf("ring0.smn.voltageRaw=0x%08X\n", d.voltageRaw);
+        }
+        if (d.pkgEnergyOk) std::printf("ring0.pkgPowerW=%.1f\n", d.pkgPowerW);
+        std::printf("ring0.pwrUnitRaw=0x%08X\n", d.pwrUnitRaw);
+        std::printf("ring0.perCore=%u/%u\n", d.perCoreSampled, d.perCoreTotal);
+        if (d.perCoreSampled > 0) {
+            std::printf("ring0.perCoreMHzMin=%.0f\n", d.perCoreMinMHz);
+            std::printf("ring0.perCoreMHzMax=%.0f\n", d.perCoreMaxMHz);
+        }
+        if (!d.note.empty()) std::printf("ring0.note=%s\n", d.note.c_str());
+    } else {
+        std::printf("ring0.provider=absent\n");
+    }
+    if (!collector.Ring0Note().empty())
+        std::printf("ring0.unavailableReason=%s\n", collector.Ring0Note().c_str());
 
     std::printf("\n[gpu]\n");
     std::printf("gpu.adapters=%d\n", snap->gpuAdapterCount);

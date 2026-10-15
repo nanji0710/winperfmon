@@ -13,7 +13,7 @@
 |---|---|---|
 | P0 | 开发方案（技术路线、驱动方案、里程碑） | ✅ 完成（`docs/winperfmon-dev-plan.md`） |
 | P1 | 设计文档集：配置数据结构与接口、AMD 支持、UI 设置、发布合规 | ✅ 完成（`docs/` 5 份设计文档 + 3 份证据台账 + 1 份构建手册） |
-| P2 | 编码实现（M0 骨架 → M1 传感器 → M2 FPS → M3 Overlay → M4 打包） | 🔵 进行中：**M0 已完成**（CPU 频率/占用 + 内存 + 配置系统 + **35 个单测全绿**）；**M1 免驱部分已完成**（AMD ADL2 PM 表 + **原生 CPU 通道** + 惰性 ACPI 热区兜底，本机 50 项里 **13 项可用**），M1 的 Ring0 部分（PawnIO：每核频率/温度、电压、风扇、Super I/O）未开始 |
+| P2 | 编码实现（M0 骨架 → M1 传感器 → M2 FPS → M3 Overlay → M4 打包） | 🔵 进行中：**M0 已完成**（CPU 频率/占用 + 内存 + 配置系统 + **43 个单测全绿**）；**M1 免驱部分已完成**（AMD ADL2 PM 表 + **原生 CPU 通道** + 惰性 ACPI 热区兜底，本机 50 项里 **13 项可用**）；**M1 的 Ring0 部分已编码接线**（PawnIO 通道：每核频率 APERF/MPERF、核心电压 SVI2、封装温度与功耗兜底、Intel MSR 口径，见 `docs/ring0-pawnio.md`），本机待装 PawnIO 驱动后真机复测 |
 
 **M0 骨架已可构建运行**：`build\winperfmon.exe` 约 1.45 MB（预算 ≤ 5 MB），零第三方运行时依赖。
 **M1 免驱遥测已接入**：AMD 平台无需 Ring0、无需管理员即可读到 CPU 温度/封装功耗/SoC 功耗、**CPU 平均频率（ADL2 `CLK_CPUCLK`）与 CPU 占用（原生 `NtQuerySystemInformation`）**，以及 GPU 频率、占用、温度；ACPI 热区作为**惰性**兜底（只在真要读温度时才枚举）。**默认路径完全不碰 Windows 性能计数器表（perflib）** —— 那笔 4.3 MB / 约 280–300 ms 的一次性开销来自计数器表本身（谁先碰谁付账且不归还），因此 PDH 退为末位降级，详见 `docs/winperfmon-dev-plan.md` §3.1/§6 与 `docs/amd-facts.md` §9。
@@ -47,7 +47,8 @@ build\winperfmon.exe --selftest
 | `docs/adl2-facts.md` | **ADL2 传感器索引表的原始核实记录**（`docs/amd-facts.md` §9 的底稿）：跨 SDK 版本一致性、索引 0–45 语义表、支持性判定的更正公告、缩放与结构体布局。**注意开头 §0 更正公告**：原稿把"采样值非零"当成"驱动支持" | ✅ 核实完成（373 行；§0 更正已生效） |
 | `docs/release-github.md` | 发布与许可合规：MIT、第三方合规动作、随包分发 PawnIO（GPL-2.0）/ 模块（LGPL-2.1）、仓库与 CI、发布物、检查清单、隐私要点、芯片表贡献流程 | ✅ 设计稿（`wil` 已按 §6.1-1 移出依赖表） |
 | `docs/laptop-telemetry-facts.md` | **笔记本电脑遥测证据综述**（证据，非设计）：ACPI 热区、EC 直连、厂商 WMI 全矩阵（HP / Dell / Lenovo / ASUS / MSI / Acer / Gigabyte / Clevo / Surface / Framework）、可借鉴开源实现、分层回退链建议。**主方案 §3.3.1 的依据**，逐条带 URL 与 `repo:path:line` | ✅ 核实完成（444 行） |
-| `docs/build-and-run.md` | **构建与验收手册**：便携工具链（GCC 16.2 / CMake 4.4 / Ninja）、构建命令、CLI 用法与覆盖项、单测范围（**35 passed / 0 failed**）、本机 M0/M1 验收记录与**免驱性能验收表**（内存 11.88 MB / 冷启动 45.8 ms / 整轮 0.92 ms / 可用 13 项） | ✅ M0 + M1 免驱完成（含性能验收） |
+| `docs/build-and-run.md` | **构建与验收手册**：便携工具链（GCC 16.2 / CMake 4.4 / Ninja）、构建命令、CLI 用法与覆盖项、单测范围（**43 passed / 0 failed**）、本机 M0/M1 验收记录与**免驱性能验收表**（内存 11.88 MB / 冷启动 45.8 ms / 整轮 0.92 ms / 可用 13 项） | ✅ M0 + M1 免驱完成（含性能验收） |
+| `docs/ring0-pawnio.md` | **Ring0 通道（PawnIO）**：为什么必须借助驱动、GPL-2.0 例外与 LGPL-2.1 模块的合规边界、设备与 IOCTL 常量、模块函数表、AMD SMN/MSR 与 Intel MSR 常量与解码、每核频率为什么用"跨轮差分"、反伪造规则、尚未做的部分（EC 风扇） | 🔵 代码就绪，待真机复测 |
 | `README.md` | 本文：索引 + 决策状态 + 开放问题汇总 + 术语 | ✅ |
 
 ## 三、建议阅读顺序

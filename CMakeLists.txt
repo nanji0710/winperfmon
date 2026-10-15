@@ -48,9 +48,11 @@ add_library(wpm_core STATIC
   src/sensors/cpu_info.cpp
   src/sensors/cpu_native.cpp
   src/sensors/cpu_pdh.cpp
+  src/sensors/cpu_ring0.cpp
   src/sensors/acpi_thermal.cpp
   src/sensors/gpu_enum.cpp
   src/sensors/adl2.cpp
+  src/sensors/pawnio.cpp
 )
 target_include_directories(wpm_core PUBLIC include src)
 # dxgi：GPU 适配器枚举（系统库，非运行时依赖；不随包分发任何 DLL）
@@ -70,7 +72,8 @@ endif()
 if(WPM_BUILD_TESTS)
   enable_testing()
   add_executable(wpm_tests tests/test_main.cpp tests/test_json.cpp tests/test_config.cpp
-                            tests/test_gpu_enum.cpp tests/test_cpu_native.cpp)
+                            tests/test_gpu_enum.cpp tests/test_cpu_native.cpp
+                            tests/test_cpu_ring0.cpp)
   target_link_libraries(wpm_tests PRIVATE wpm_core)
   add_test(NAME unit COMMAND wpm_tests)
 endif()

@@ -371,8 +371,9 @@ fanRpm=1350
 
 > 要点：`[system]` 用于区分「同芯片不同板」；`chip.*` 必须给高字节 ID；`[fan.N]` 必须保留原始计数与寄存器出处（否则无法判定 8/16 位计数与分频位域）；`[volt.N]` 必须给 `nominal`；`[issues]` 是最有价值的排障信息。
 
-**当前实现的段序（M1 实测，以此为准）**：`probeVersion` / `appVersion` / `osBuild` / `admin` / `pawnio` / `hvci` / `ring0Backend` → `[system]` → `[superio]` → `[gpu]` → `[gpu.N]` → `[config]` → `[issues]` → `[init]` → `[timing]`。
+**当前实现的段序（M1 实测，以此为准）**：`probeVersion` / `appVersion` / `osBuild` / `admin` / `pawnio` / `hvci` / `ring0Backend` → `[system]` → `[superio]` → `[ring0]` → `[gpu]` → `[gpu.N]` → `[config]` → `[issues]` → `[init]` → `[timing]`。
 
+- `[ring0]`：Ring0 通道的自证段（`ring0Backend` 只有 `PawnIO` / `none` 两种取值）。键：`ring0.vendor`（`AMD` / `Intel`，按品牌串判定）、`ring0.device`（打开的设备路径，未打开为 `(未打开)`）、`ring0.driverVersion`（注册表 `DisplayVersion`）、`ring0.module`（`loaded` / `not-loaded`）、`ring0.modulePath`（实际载入的模块文件）、`ring0.moduleNote`（载入失败原因）、`ring0.smn.tempC` / `ring0.smn.tempRaw`（SMN `THM_TCON_CUR_TMP` 的解码值与原始值）、`ring0.smn.coreVoltageV` / `ring0.smn.voltageOffset` / `ring0.smn.voltageRaw`（SVI2 遥测，含**实际采用哪个偏移**）、`ring0.pkgPowerW`、`ring0.pwrUnitRaw`、`ring0.perCore=N/M`（扫到/总核数）、`ring0.perCoreMHzMin` / `ring0.perCoreMHzMax`、`ring0.note`、`ring0.unavailableReason`（通道没打开时的**原因原文**，`[issues]` 与各 `AvRing0` 指标的降级文案都引用它）。缺了这个段，"风扇读不到"这类报告就只能靠猜。
 - `[gpu]`：`gpu.adapters`（枚举到的适配器数）、`gpu.selected`（解析后的下标，`-1` = 无遥测目标）、`gpu.selectedIndexConfig`（配置/命令行给的原始值，用于区分"用户要 1"和"最终没选"）、`gpu.name`、`gpu.metricsSource`（`ADL2` / `none`）、`gpu.note`（无法选定时的**原因原文**，含"不会改用其它适配器的读数"）、`gpu.acpiFallbackZone`（**候选**的 GPU 温度兜底热区：分类为 `gpu` 的第一个热区，无则 `none`；它是候选而非"可用"——热区是否真接了传感器按每次读数判，读数不合理时该指标会显示不可用并说明原因）、`acpi.zones`（本机热区清单，形如 `\_TZ.CPUZ(cpu) \_TZ.GFXZ(gpu) \_TZ.BAGZ(other)`；**只有 `--probe` 会触发这次枚举**，常驻路径是惰性的——枚举本身会让性能计数器表常驻，见 dev-plan 内存一节）。
 - `[gpu.N]`（N 从 1 开始）：`vendor` / `vendorId` / `deviceId` / `name` / `backend`（`ADL2` / 空）/ `integrated` / `software` / `dxgiIndex` / `luid` / `duplicates` / `dedicatedVideoMemoryMB` / `sharedSystemMemoryMB`。`duplicates` = 被折叠的同类条目数（DXGI 会把同一块核显报成多条除 LUID 外完全相同的记录，本机实测 4 条）。**这一节是判断"为什么没读到 GPU"的第一现场**。
 - `[init]`：每个 provider 的 `name: 就绪/不可用（原因）`，以及**未绑定时写明"为什么未绑定"**（例如 `gpu.selectedIndex` 解析失败）。
