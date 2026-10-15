@@ -536,21 +536,10 @@ wpm::ui::HudModel BuildHudModel(Collector& collector, const Config& cfg) {
     const Snapshot& snap = *snapPtr;
 
     wpm::ui::HudModel m;
+    // 只留一行标题：CPU/GPU 型号、核心数、基频这些「配置信息」属于 --probe 的内容，
+    // 常驻面板上不该占地方（面板是看数的，不是看机器铭牌的）。
     m.title = L"winperfmon " + wpm::text::toWide(WPM_VERSION_STRING);
-    std::wstring sub = wpm::text::toWide(snap.cpuBrand);
-    if (!snap.gpuName.empty()) {
-        if (!sub.empty()) sub += L" · ";
-        sub += wpm::text::toWide(snap.gpuName);
-    }
     const std::string fpsNote = collector.Fps() != nullptr ? collector.Fps()->Note() : std::string();
-    if (snap.logicalCores > 0) {
-        char buf[96];
-        std::snprintf(buf, sizeof(buf), "%u 核 · %.2f GHz 基频", snap.logicalCores,
-                      snap.baseClockMHz / 1000.0);
-        if (!sub.empty()) sub += L" · ";
-        sub += wpm::text::toWide(buf);
-    }
-    m.subtitle = sub;
 
     const auto cat = MetricCatalog();
     int okCount = 0;
@@ -590,10 +579,9 @@ wpm::ui::HudModel BuildHudModel(Collector& collector, const Config& cfg) {
     }
 
     char footer[192];
-    std::snprintf(footer, sizeof(footer), "%d/%zu 可用 · %d 项读不到 · %.1f ms/轮 · %u ms 刷新%s",
-                  okCount, snap.metrics.size(), missingShown, collector.StepAvgMs(),
-                  cfg.update.sensorIntervalMs,
-                  fpsNote.empty() ? "" : "");  // FPS 状态见 --probe 的 [fps] 段
+    // 极简：面板宽度由指标列决定，页脚不许把它撑宽（详细信息看 --probe）
+    std::snprintf(footer, sizeof(footer), "%d/%zu 可用 · %d 缺 · %.1f ms",
+                  okCount, snap.metrics.size(), missingShown, collector.StepAvgMs());
     m.footer = wpm::text::toWide(footer);
     return m;
 }

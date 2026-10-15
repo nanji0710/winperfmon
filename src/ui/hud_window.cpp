@@ -11,11 +11,11 @@ namespace {
 
 constexpr wchar_t kClassName[] = L"winperfmon.HudWindow";
 constexpr UINT_PTR kTimerId = 1;
-constexpr int kPaddingDp = 14;
-constexpr int kTitleGapDp = 6;
-constexpr int kColumnGapDp = 16;
-constexpr int kMinWidthDp = 240;
-constexpr int kMaxWidthDp = 520;
+constexpr int kPaddingDp = 9;
+constexpr int kTitleGapDp = 3;
+constexpr int kColumnGapDp = 14;
+constexpr int kMinWidthDp = 150;
+constexpr int kMaxWidthDp = 640;
 
 COLORREF ToColorRef(unsigned argb) {
     return RGB(static_cast<BYTE>((argb >> 16) & 0xFF), static_cast<BYTE>((argb >> 8) & 0xFF),
@@ -78,7 +78,7 @@ void HudWindow::RebuildFonts() {
                              FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_TT_PRECIS,
                              CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                              DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
-    lineHeight_ = static_cast<int>(size * 1.6);
+    lineHeight_ = static_cast<int>(size * 1.28);  // 紧凑：面板贴边时不占地方
 }
 
 bool HudWindow::Create(const HudStyle& style, std::string* error) {
@@ -206,7 +206,7 @@ void HudWindow::Refresh() {
                 valueMax = std::max(valueMax, static_cast<int>(s.cx));
         }
     }
-    // 标题/副标题/页脚也要量：长 CPU 名与统计行不该被截断（宁可面板宽一点）
+    // 标题参与测量（它是固定的），页脚故意不参与：页脚是状态行，不该把面板撑宽
     SIZE s{};
     SelectObject(dc, fontValue_);
     if (GetTextExtentPoint32W(dc, model_.title.c_str(), static_cast<int>(model_.title.size()), &s))
@@ -216,18 +216,13 @@ void HudWindow::Refresh() {
         if (GetTextExtentPoint32W(dc, model_.subtitle.c_str(), static_cast<int>(model_.subtitle.size()), &s))
             valueMax = std::max(valueMax, static_cast<int>(s.cx));
     }
-    if (!model_.footer.empty()) {
-        SelectObject(dc, fontSmall_);
-        if (GetTextExtentPoint32W(dc, model_.footer.c_str(), static_cast<int>(model_.footer.size()), &s))
-            valueMax = std::max(valueMax, static_cast<int>(s.cx));
-    }
     DeleteDC(dc);
     ReleaseDC(hwnd_, screen);
 
     labelWidth_ = labelMax;
     const int padding = Scale(kPaddingDp);
     const int gap = Scale(kColumnGapDp);
-    const int titleW = Scale(210);
+    const int titleW = Scale(150);
     // 宽度取高水位并量化到 16 px：刷新时数值/单位位数会变（59% ↔ 100%），若每轮都跟着改窗口大小，
     // DWM 会不断重建重定向表面，工作集随刷新次数线性上涨（实测 14 MB → 30 MB / 45 s）。
     contentWidth_ = std::max(contentWidth_, valueMax);
@@ -237,7 +232,7 @@ void HudWindow::Refresh() {
 
     const int titleLines = (model_.subtitle.empty() ? 1 : 2) + (model_.footer.empty() ? 0 : 1);
     panelHeight_ = padding * 2 + lineHeight_ * (titleLines + static_cast<int>(model_.rows.size())) +
-                   Scale(kTitleGapDp) * 2;
+                   Scale(kTitleGapDp);
 
     RECT cur{};
     GetWindowRect(hwnd_, &cur);
