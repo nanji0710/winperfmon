@@ -72,7 +72,7 @@
 | 字段 | 类型 | 取值范围 | 默认 | 说明 |
 |---|---|---|---|---|
 | `orientation` | enum | `horizontal` \| `vertical` | `horizontal` | **横向排布** = 指标从左到右一行；**纵向排布** = 指标从上到下一列 |
-| `groupByCategory` | bool | — | `true` | 按分组（CPU/GPU/风扇/帧率/系统）分段，段内保持 `metrics` 顺序；段间插入 `groupGapDp` |
+| `groupByCategory` | bool | — | `false` | 按分组（CPU/GPU/风扇/帧率/系统）分段，段内保持 `metrics` 顺序；段间插入 `groupGapDp`。默认关闭：一律用 `itemGapDp`，避免紧凑面板上出现「某一行上下空隙和别人不一样」 |
 | `showLabels` | bool | — | `true` | 是否显示指标名称（如 `CPU 温度`）；关闭则只显示数值+单位 |
 | `showUnits` | bool | — | `true` | 是否显示单位（`°C`/`MHz`/`W`/`RPM`/`FPS`） |
 | `itemGapDp` | int | 0–64 | `8` | 同段内相邻指标的间距（Dp） |
@@ -306,7 +306,7 @@ struct MetricEntry {
     float       sizeScale = 1.0f;   // [0.5, 2.0]
     int         precision = -1;     // -1 = 目录默认
 };
-struct LayoutConfig { Orientation orientation = Orientation::Horizontal; bool groupByCategory = true;
+struct LayoutConfig { Orientation orientation = Orientation::Horizontal; bool groupByCategory = false;
                       bool showLabels = true; bool showUnits = true; int itemGapDp = 8; int groupGapDp = 14;
                       Align align = Align::Start; bool wrap = false; int maxWidthDp = 960;
                       bool hideMissing = true; };
@@ -426,7 +426,7 @@ bool ApplyCommandLineOverrides(Config&, int argc, const wchar_t* const* argv,
   "schemaVersion": 1,
   "meta": { "writtenBy": "winperfmon 0.1.0", "lastSavedUtc": "" },
   "layout": {
-    "orientation": "horizontal", "groupByCategory": true, "showLabels": true, "showUnits": true,
+    "orientation": "horizontal", "groupByCategory": false, "showLabels": true, "showUnits": true,
     "itemGapDp": 8, "groupGapDp": 14, "align": "start", "wrap": false, "maxWidthDp": 960,
     "hideMissing": true
   },

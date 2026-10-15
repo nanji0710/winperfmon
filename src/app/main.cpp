@@ -588,9 +588,12 @@ wpm::ui::HudModel BuildHudModel(Collector& collector, const Config& cfg) {
         row.value = r.ok() ? wpm::text::toWide(v) : std::wstring(L"N/A");
         row.colorOverride = mc.color.v;  // 0 = 随主题
         if (cfg.layout.showUnits) {
-            // 读不到时单位位置改成短状态（「需要 Ring0」这种），比空白有用
+            // 读不到时单位位置写「具体缺什么」：需要 Ring0 / 需要 PresentMon 这类信息有用，
+            // 但状态就是普通 Unavailable 时不写——否则面板上会出现「N/A 不可用」两段同义文字。
             row.unit = r.ok() ? wpm::text::toWide(std::string(cat[i].unit))
-                              : wpm::text::toWide(StatusText(r.status));
+                              : (r.status == Status::Unavailable
+                                     ? std::wstring()
+                                     : wpm::text::toWide(StatusText(r.status)));
         }
         row.emphasis = r.ok() && (cat[i].id == "cpu.usage" || cat[i].id == "gpu.usage" ||
                                   cat[i].id == "fps.avg");

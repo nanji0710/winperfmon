@@ -31,7 +31,7 @@
 | 控件 | 绑定字段 | 行为 |
 |---|---|---|
 | 横向排布 / 纵向排布（两张大图示按钮） | `layout.orientation` | 点击立即重排；图示直观表达「一行指标」vs「一列指标」 |
-| 按分组显示（CPU/GPU/风扇/帧率） | `layout.groupByCategory` | 开启后组间自动加间距 |
+| 按分组显示（CPU/GPU/风扇/帧率） | `layout.groupByCategory` | 默认关闭（全用 itemGapDp）；开启后组间额外加 groupGapDp |
 | 显示指标名称 | `layout.showLabels` | 关闭后只留数值+单位 |
 | 显示单位 | `layout.showUnits` | — |
 | 项目间距 / 分组间距（滑块） | `layout.itemGapDp` / `groupGapDp` | 0–64 Dp，拖动实时预览 |

@@ -53,7 +53,9 @@ struct MetricEntry {
 
 struct LayoutConfig {
     Orientation orientation = Orientation::Horizontal;
-    bool groupByCategory = true;
+    // 默认关闭：组间多出来的空隙在紧凑面板上读起来像排版错乱（本机实测反馈），
+  // 间距一律用 itemGapDp；想按 CPU/GPU/风扇/帧率/系统 分段再把它打开，段间才用 groupGapDp。
+  bool groupByCategory = false;
     bool showLabels = true;
     bool showUnits = true;
     int itemGapDp = 8;      // 0..64
