@@ -254,3 +254,18 @@ M1 的**免驱部分与 Ring0 部分都已在本机验收通过**（免驱见 §
 仍未开始的是：**每核**温度与核心电压（当前 SMN 只给封装温度、SVI2 在本机读不到）、RAPL 每核功耗、
 Super I/O 探测 + 风扇 RPM、笔记本的 EC / 厂商 WMI 降级链（§3.3.1），以及 Intel 平台的电压口径（未在 Intel 机器上实测）。
 权威的「尚未做」清单见 `docs/ring0-pawnio.md` §8。
+
+## 10. 打包（便携包与安装器）
+
+两个产物都由 `dist\winperfmon-0.3.0-win64\` 这份载荷出发（同一份文件树，避免两条打包链路漂移）：
+
+1. **组装载荷**：`dist\winperfmon-0.3.0-win64\` = `winperfmon.exe` + `PresentMon.exe` + `modules\{AMDFamily17.bin, LpcACPIEC.bin, COPYING}` +
+   `LICENSE` + `NOTICE.txt` + `使用说明.txt` + `以管理员运行.cmd` + `生成诊断报告.cmd` + `PawnIO_setup_2.2.0.exe` + `docs\*`。
+2. **便携包**：把整个目录压成 `dist\winperfmon-0.3.0-win64.zip`（免安装，解压即用）。
+3. **安装器**（Inno Setup 6.7.3，`D:\GitHub\winperfmon-toolchain\innosetup\ISCC.exe`）：
+   - 正式：`ISCC.exe packaging\winperfmon.iss` → `dist\winperfmon-0.3.0-setup.exe`（需管理员；勾选「依赖组件」时静默装 PawnIO，卸载时询问是否一并卸载）
+   - 测试：`ISCC.exe /DTestBuild=1 packaging\winperfmon.iss` → `dist\winperfmon-0.3.0-setup-test.exe`（最低权限、装到 `%LOCALAPPDATA%\winperfmon-test`、跳过 PawnIO）——用于在没有管理员权限的机器上验证文件落地与卸载。
+
+**已实测**（2026-10-15）：便携包在本机解压后 `--probe` 能正确找到同目录的 `modules\`（`ring0.modulePath` 指向解压目录）；
+安装器编译通过、载荷文件逐个安装成功（含 `modules\*` 与 `docs\*`）。
+**未实测**：驱动随装随卸的完整流程（本机非管理员，安装器的注册表写入会被沙箱拒绝而回滚）——需在管理员机器上验证。

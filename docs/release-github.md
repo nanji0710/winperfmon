@@ -209,10 +209,11 @@ winperfmon/                        # 仓库根（名称已定：winperfmon）
 - **单测范围**：1% Low / 0.1% Low / 调和平均 / stutter 口径、RAPL 32 位回绕、异常值校验、配置默认值与迁移、PresentMon CSV 解析（用录制样本作 fixture，样本不得含可识别信息）。
 - **供应链**：第三方 action 固定到 commit SHA；`permissions` 最小化（仅发布 job 需 `contents: write`）。
 
-### 6.2 为什么首版不做驱动签名、不发布安装器
+### 6.2 驱动签名与安装器：现状与边界
 
-- **不做驱动签名**：Win11 22H2 起新内核驱动必须 WHQL（开发方案 §4），个人/小团队不可行；且本项目本来就**不分发驱动**（PawnIO 由用户自装），没有可签名的产物。
-- **不发布安装器**：安装器需要 EV 代码签名证书；portable zip + 单 EXE 无注册表写入、无卸载残留、无运行时依赖，本身就是差异化卖点（开发方案 §1、§10）。
+- **不做驱动签名**：Win11 22H2 起新内核驱动必须 WHQL（开发方案 §4），个人/小团队不可行；且本项目本来就**不分发驱动**（PawnIO 官方安装包随包附带、由用户确认后安装），没有可签名的产物。
+- **安装器已实现（内测，未公开分发）**：`packaging\winperfmon.iss`（Inno Setup 6.7.3）产出 `winperfmon-<ver>-setup.exe` —— 安装本程序 + PresentMon + `modules\` + 文档，并在用户勾选「依赖组件」时静默安装 PawnIO，卸载时询问是否一并卸载 PawnIO。**公开分发前必须先解决代码签名**（EV 证书）；在此之前 portable zip 仍是首选交付物。
+- **依赖随装随卸的依据**（实测 PawnIO 2.2.0）：官方安装器自带命令行 `Usage: PawnIOSetup.exe [-install] [-uninstall] [-unrestricted] [-debuginfo] [-silent]`，`-silent` = 无 UI（出错也不弹）；卸载串取注册表 `QuietUninstallString`（`"C:\Program Files\PawnIO\uninstall.exe" -uninstall -silent`），版本号取 `DisplayVersion`（`2.2.0.0`）。**不使用 `-unrestricted`**：默认受限模式足够本项目的只读用途。
 - **代价与话术**：未签名 EXE 首次运行会触发 SmartScreen → README 与 Release Notes 给出"更多信息 → 仍要运行"的说明，并公开源码与可复现的 CI 构建，用透明度替代签名信任。
 
 ## 7. 版本与发布物策略
@@ -232,6 +233,7 @@ winperfmon/                        # 仓库根（名称已定：winperfmon）
 | 附件 | 说明 |
 |---|---|
 | `winperfmon-<ver>-x64.zip` | EXE + LICENSE + NOTICE + README（+ `docs/metrics.md`） |
+| `winperfmon-<ver>-setup.exe` | Inno Setup 安装器（内测；含 PresentMon 与 `modules\`，可选随装 PawnIO；见 §6.2） |
 | `winperfmon.exe` | 裸 EXE，便于老用户直接替换 |
 | `SHA256SUMS.txt` | 所有附件的 SHA-256 |
 | 源码 zip / tar.gz | GitHub 自动生成 |
