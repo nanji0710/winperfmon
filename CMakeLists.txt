@@ -53,6 +53,7 @@ add_library(wpm_core STATIC
   src/sensors/gpu_enum.cpp
   src/sensors/adl2.cpp
   src/sensors/pawnio.cpp
+    src/ui/hud_window.cpp
   src/fps/framestats.cpp
   src/fps/presentmon_csv.cpp
   src/fps/fps_provider.cpp

@@ -24,6 +24,7 @@
 #include "sensors/cpu_ring0.h"
 #include "sensors/gpu_enum.h"
 #include "sensors/memory.h"
+#include "ui/hud_window.h"
 #include "sensors/sensor.h"
 
 #include <windows.h>
@@ -501,6 +502,115 @@ void PrintStatusSummary(const Snapshot& snap) {
                 need, err, snap.metrics.size());
 }
 
+// ── HUD 窗口（M0.5 可见雏形）──────────────────────────────────────────────
+// 这一层只做三件事：把配置翻译成绘制参数、把快照翻译成「行」、把窗口跑起来。
+// 采样与降级判断全在 provider/Collector 里，UI 不重新解释数据（尤其不把读不到当 0）。
+wpm::ui::HudStyle HudStyleFromConfig(const Config& cfg) {
+    wpm::ui::HudStyle s;
+    // 颜色：0 表示「随主题」，此时用 HudStyle 里的深色默认值
+    if (cfg.colors.background.v != 0) s.bg = cfg.colors.background.v;
+    if (cfg.colors.panelBorder.v != 0) s.border = cfg.colors.panelBorder.v;
+    if (cfg.colors.label.v != 0) s.label = cfg.colors.label.v;
+    if (cfg.colors.value.v != 0) s.value = cfg.colors.value.v;
+    if (cfg.colors.unit.v != 0) s.unit = cfg.colors.unit.v;
+    if (cfg.colors.accent.v != 0) s.accent = cfg.colors.accent.v;
+    s.baseSizeDp = cfg.text.baseSizeDp;
+    s.opacity = cfg.window.opacity;
+    s.showUnits = cfg.layout.showUnits;
+    s.hideMissing = cfg.layout.hideMissing;
+    s.marginDp = cfg.window.marginDp;
+    s.topmost = cfg.window.topmost != wpm::config::TopmostPolicy::Never;
+    switch (cfg.window.corner) {
+        case wpm::config::Corner::TopRight: s.corner = 1; break;
+        case wpm::config::Corner::BottomLeft: s.corner = 2; break;
+        case wpm::config::Corner::BottomRight: s.corner = 3; break;
+        case wpm::config::Corner::TopLeft:
+        default: s.corner = 0; break;
+    }
+    return s;
+}
+
+wpm::ui::HudModel BuildHudModel(Collector& collector, const Config& cfg) {
+    collector.Step();  // 每帧刷新前采一次；HUD 的刷新节奏就是采样节奏
+    const std::shared_ptr<const Snapshot> snapPtr = collector.Latest();
+    const Snapshot& snap = *snapPtr;
+
+    wpm::ui::HudModel m;
+    m.title = L"winperfmon " + wpm::text::toWide(WPM_VERSION_STRING);
+    std::wstring sub = wpm::text::toWide(snap.cpuBrand);
+    if (!snap.gpuName.empty()) {
+        if (!sub.empty()) sub += L" · ";
+        sub += wpm::text::toWide(snap.gpuName);
+    }
+    const std::string fpsNote = collector.Fps() != nullptr ? collector.Fps()->Note() : std::string();
+    if (snap.logicalCores > 0) {
+        char buf[96];
+        std::snprintf(buf, sizeof(buf), "%u 核 · %.2f GHz 基频", snap.logicalCores,
+                      snap.baseClockMHz / 1000.0);
+        if (!sub.empty()) sub += L" · ";
+        sub += wpm::text::toWide(buf);
+    }
+    m.subtitle = sub;
+
+    const auto cat = MetricCatalog();
+    int okCount = 0;
+    int missingShown = 0;
+    for (size_t i = 0; i < cat.size(); ++i) {
+        bool visible = cat[i].defaultVisible;
+        std::wstring label = wpm::text::toWide(std::string(cat[i].defaultLabel));
+        for (const auto& mc : cfg.metrics) {
+            if (wpm::text::iequals(mc.id, cat[i].id)) {
+                visible = mc.visible;
+                if (!mc.label.empty()) label = wpm::text::toWide(mc.label);
+            }
+        }
+        if (!visible) continue;
+
+        const auto& r = snap.at(i);
+        if (r.ok()) {
+            ++okCount;
+        } else if (cfg.layout.hideMissing) {
+            ++missingShown;
+            continue;  // 默认隐藏读不到的项，但底部会告诉你有几项
+        }
+        wpm::ui::HudRow row;
+        row.label = label;
+        row.available = r.ok();
+        std::string v;
+        FormatValue(cat[i], r, cfg, v);
+        row.value = wpm::text::toWide(v);
+        if (cfg.layout.showUnits) {
+            // 读不到时单位位置改成短状态（「需要 Ring0」这种），比空白有用
+            row.unit = r.ok() ? wpm::text::toWide(std::string(cat[i].unit))
+                              : wpm::text::toWide(StatusText(r.status));
+        }
+        row.emphasis = r.ok() && (cat[i].id == "cpu.usage" || cat[i].id == "gpu.usage" ||
+                                  cat[i].id == "fps.avg");
+        m.rows.push_back(std::move(row));
+    }
+
+    char footer[192];
+    std::snprintf(footer, sizeof(footer), "%d/%zu 可用 · %d 项读不到 · %.1f ms/轮 · %u ms 刷新%s",
+                  okCount, snap.metrics.size(), missingShown, collector.StepAvgMs(),
+                  cfg.update.sensorIntervalMs,
+                  fpsNote.empty() ? "" : "");  // FPS 状态见 --probe 的 [fps] 段
+    m.footer = wpm::text::toWide(footer);
+    return m;
+}
+
+int RunHud(Collector& collector, const Config& cfg) {
+    wpm::ui::HudWindow::EnablePerMonitorDpi();
+    wpm::ui::HudWindow win;
+    win.SetIntervalMs(static_cast<unsigned>(cfg.update.sensorIntervalMs));
+    win.SetBuilder([&collector, &cfg]() { return BuildHudModel(collector, cfg); });
+    std::string err;
+    if (!win.Create(HudStyleFromConfig(cfg), &err)) {
+        std::printf("窗口创建失败：%s\n", err.c_str());
+        return 3;
+    }
+    return win.Run();
+}
+
 // ── 探针需要的环境事实（release-github.md §11 头部字段）────────────────────
 bool IsProcessElevated() {
     HANDLE token = nullptr;
@@ -827,18 +937,20 @@ int RunOnce(Collector& c, const Config& cfg, bool onlyVisible) {
 int wmain(int argc, wchar_t** argv) {
     g_processStartMs = NowMs();  // 冷启动计时原点：进程入口第一件事
     MemMark("进程入口");          // 早于 AttachConsole，用于分离"控制台挂接"的内存代价
-    // 文本模式命令直接走控制台；无参数时 M0 阶段也先走文本（GUI 在 M3）
+    // 文本模式命令直接走控制台；无参数时打开 HUD 窗口（M0.5 的可见雏形）。
     bool needConsole = true;
     for (int i = 1; i < argc; ++i) {
-        if (std::wstring(argv[i]) == L"--version") needConsole = false;
+        const std::wstring a = argv[i];
+        if (a == L"--version" || a == L"-v") needConsole = false;
+        if (a == L"--hud" || a == L"--window") needConsole = false;
     }
-    if (needConsole) AttachOrAllocateConsole();
 
     bool showVersion = false;
     bool once = false;
     bool probe = false;
     bool selftest = false;
     bool all = false;
+    bool hud = (argc <= 1);  // 双击 / 无参数 = 打开窗口，而不是打印后退出
     int watchSeconds = 0;
     for (int i = 1; i < argc; ++i) {
         const std::wstring a = argv[i];
@@ -847,8 +959,10 @@ int wmain(int argc, wchar_t** argv) {
         else if (a == L"--probe") probe = true;
         else if (a == L"--selftest") selftest = true;
         else if (a == L"--all") all = true;
+        else if (a == L"--hud" || a == L"--window") hud = true;
         else if (a == L"--watch" && i + 1 < argc) watchSeconds = _wtoi(argv[++i]);
     }
+    if (needConsole) AttachOrAllocateConsole();
 
     // --version 不需要控制台也不加载配置
     if (showVersion) {
@@ -857,7 +971,7 @@ int wmain(int argc, wchar_t** argv) {
         std::fflush(stdout);
         return 0;
     }
-    if (!once && !probe && !selftest && watchSeconds == 0) once = true;  // M0 默认行为
+    if (!once && !probe && !selftest && watchSeconds == 0 && !hud) once = true;  // 默认行为
 
     // ── 配置：命令行 > 环境变量 > portable > %APPDATA% > 只读 ──────────────
     const wpm::config::ConfigPaths paths = wpm::config::ResolveConfigPaths(argc, argv);
@@ -879,10 +993,20 @@ int wmain(int argc, wchar_t** argv) {
     const bool anyProvider = collector.Init(cfg, initReport);
     MemMark("provider 初始化后");
     if (!anyProvider) {
-        std::printf("没有可用的免驱数据源。\n%s", initReport.c_str());
-        std::fflush(stdout);
+        if (hud) {
+            MessageBoxW(nullptr, wpm::text::toWide(initReport).c_str(), L"winperfmon：没有可用的数据源",
+                        MB_OK | MB_ICONWARNING);
+        } else {
+            std::printf("没有可用的免驱数据源。\n%s", initReport.c_str());
+            std::fflush(stdout);
+        }
         return 2;
     }
+
+    // 无参数 / --hud：直接进窗口模式（没有控制台，printf 不会有人看到）
+    if (hud) return RunHud(collector, cfg);
+
+    // 读快照时保留一份：下面的控制台输出与控制台命令都基于同一次采样
 
     std::printf("winperfmon %s（M1 免驱遥测：原生 CPU 采样 + AMD ADL2 PM 表 + ACPI 热区兜底）\n",
                 WPM_VERSION_STRING);
