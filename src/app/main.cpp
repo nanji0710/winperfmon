@@ -519,6 +519,19 @@ wpm::ui::HudStyle HudStyleFromConfig(const Config& cfg) {
     s.showUnits = cfg.layout.showUnits;
     s.hideMissing = cfg.layout.hideMissing;
     s.marginDp = cfg.window.marginDp;
+    // 布局：面板形状（纵铺/横铺、是否带标签、是否换行、间距）完全由配置决定
+    s.horizontal = cfg.layout.orientation == wpm::config::Orientation::Horizontal;
+    s.showLabels = cfg.layout.showLabels;
+    s.wrap = cfg.layout.wrap;
+    s.maxWidthDp = cfg.layout.maxWidthDp;
+    s.itemGapDp = cfg.layout.itemGapDp;
+    s.groupGapDp = cfg.layout.groupGapDp;
+    switch (cfg.layout.align) {
+        case wpm::config::Align::Center: s.align = 1; break;
+        case wpm::config::Align::End: s.align = 2; break;
+        case wpm::config::Align::Start:
+        default: s.align = 0; break;
+    }
     s.topmost = cfg.window.topmost != wpm::config::TopmostPolicy::Never;
     switch (cfg.window.corner) {
         case wpm::config::Corner::TopRight: s.corner = 1; break;
@@ -542,18 +555,18 @@ wpm::ui::HudModel BuildHudModel(Collector& collector, const Config& cfg) {
     const std::string fpsNote = collector.Fps() != nullptr ? collector.Fps()->Note() : std::string();
 
     const auto cat = MetricCatalog();
+    const auto slotOf = [&cat](std::string_view id) -> size_t {
+        for (size_t i = 0; i < cat.size(); ++i)
+            if (cat[i].id == id) return i;
+        return static_cast<size_t>(-1);
+    };
     int okCount = 0;
     int missingShown = 0;
-    for (size_t i = 0; i < cat.size(); ++i) {
-        bool visible = cat[i].defaultVisible;
-        std::wstring label = wpm::text::toWide(std::string(cat[i].defaultLabel));
-        for (const auto& mc : cfg.metrics) {
-            if (wpm::text::iequals(mc.id, cat[i].id)) {
-                visible = mc.visible;
-                if (!mc.label.empty()) label = wpm::text::toWide(mc.label);
-            }
-        }
-        if (!visible) continue;
+    int lastCategory = -1;  // 用于 groupByCategory：换类目时留一段分组间距
+    // 顺序即配置数组顺序（config-schema §3.3 顺序语义：数组下标 = 展示顺序，横向从左到右/纵向从上到下）
+    for (const auto& mc : cfg.metrics) {
+        const size_t i = slotOf(mc.id);
+        if (i == static_cast<size_t>(-1) || !mc.visible) continue;
 
         const auto& r = snap.at(i);
         if (r.ok()) {
@@ -563,11 +576,17 @@ wpm::ui::HudModel BuildHudModel(Collector& collector, const Config& cfg) {
             continue;  // 默认隐藏读不到的项，但底部会告诉你有几项
         }
         wpm::ui::HudRow row;
-        row.label = label;
+        const int category = static_cast<int>(cat[i].category);
+        row.newGroup = cfg.layout.groupByCategory && lastCategory >= 0 && category != lastCategory;
+        lastCategory = category;
+        row.label = mc.label.empty() ? wpm::text::toWide(std::string(cat[i].defaultLabel))
+                                     : wpm::text::toWide(mc.label);
         row.available = r.ok();
         std::string v;
         FormatValue(cat[i], r, cfg, v);
-        row.value = wpm::text::toWide(v);
+        // 契约（config-schema §3.3 渲染约束）：缺数据显示 N/A，且颜色降为暗色，避免被误读成异常值
+        row.value = r.ok() ? wpm::text::toWide(v) : std::wstring(L"N/A");
+        row.colorOverride = mc.color.v;  // 0 = 随主题
         if (cfg.layout.showUnits) {
             // 读不到时单位位置改成短状态（「需要 Ring0」这种），比空白有用
             row.unit = r.ok() ? wpm::text::toWide(std::string(cat[i].unit))

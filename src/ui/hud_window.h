@@ -8,6 +8,7 @@
 
 #include <windows.h>
 
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
@@ -21,6 +22,8 @@ struct HudRow {
     std::wstring unit;    // 单独画在数值右侧，可用颜色区分
     bool available = true;  // false → 用暗色画（读不到），但**仍然占一行**（不静默消失）
     bool emphasis = false;  // true → 数值用强调色
+    bool newGroup = false;  // true → 与上一项之间留分组间距（groupByCategory）
+    uint32_t colorOverride = 0;  // 0xAARRGGBB，0 = 随主题（metrics[].color）
 };
 
 struct HudModel {
@@ -46,6 +49,14 @@ struct HudStyle {
     int corner = 0;   // 0 左上 / 1 右上 / 2 左下 / 3 右下
     int marginDp = 12;
     bool topmost = true;
+    // —— 布局（来自 LayoutConfig）：面板形状完全由用户配置决定 ——
+    bool horizontal = false;     // true = 横铺（每项一列，标签在上数值在下），false = 纵铺（每项一行）
+    bool showLabels = true;      // false = 只铺数值（最紧凑的横条）
+    bool wrap = false;           // 横铺时超出 maxWidthDp 是否换行
+    int maxWidthDp = 960;
+    int itemGapDp = 8;           // 同一组内各项间距
+    int groupGapDp = 14;         // 分组之间的额外间距
+    int align = 0;               // 0 = 起始 / 1 = 居中 / 2 = 末尾（横铺时对齐整行；纵铺时对齐数值列）
 };
 
 class HudWindow {
@@ -94,10 +105,23 @@ private:
     unsigned dpi_ = 96;
 
     int lineHeight_ = 20;                 // 逻辑像素（已含行距）
-    int labelWidth_ = 90;                 // 由模型实测
+    int labelWidth_ = 90;                 // 由模型实测（纵铺用）
+    int valueColumnW_ = 0;                // 纵铺：数值列宽（取所有项最大值，让小数点成列）
+    int unitColumnW_ = 0;                 // 纵铺：单位列宽（单位成列才好扫读）
     int contentWidth_ = 0;                // 内容宽度高水位：只增不减，避免数值位数变化引起窗口反复改大小
     int panelWidth_ = 0;
     int panelHeight_ = 0;
+
+    /// 一项在窗口内的位置（Refresh 里算好，Paint 只负责画）
+    struct Cell {
+        int x = 0;
+        int y = 0;
+        int w = 0;       // 该格可用宽度（画不下就省略号）
+        int valueW = 0;  // 数值文本宽度（纵铺右对齐、横铺左对齐都要）
+        int unitW = 0;   // 单位文本宽度（0 = 不画）
+        int labelW = 0;  // 标签文本宽度
+    };
+    std::vector<Cell> cells_;
 
     bool dragging_ = false;
     POINT dragOrigin_{};

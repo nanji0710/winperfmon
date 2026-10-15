@@ -14,7 +14,8 @@ constexpr UINT_PTR kTimerId = 1;
 constexpr int kPaddingDp = 9;
 constexpr int kTitleGapDp = 3;
 constexpr int kColumnGapDp = 14;
-constexpr int kMinWidthDp = 150;
+constexpr int kUnitGapDp = 3;      // 数值与单位之间
+constexpr int kMinWidthDp = 180;
 constexpr int kMaxWidthDp = 640;
 
 COLORREF ToColorRef(unsigned argb) {
@@ -185,60 +186,142 @@ void HudWindow::ApplyPosition() {
 void HudWindow::Refresh() {
     if (builder_) model_ = builder_();
 
+    const int padding = Scale(kPaddingDp);
+    const int gap = Scale(style_.itemGapDp);
+    const int groupGap = Scale(style_.groupGapDp);
+    const int unitGap = Scale(kUnitGapDp);
+    const std::size_t count = model_.rows.size();
+    const int labelLine = style_.showLabels ? lineHeight_ : 0;  // 横铺时标签那行的行高
+
+    // ── 测量：每项都要知道标签/数值/单位各占多宽 ──────────────────────────
     HDC screen = GetDC(hwnd_);
     HDC dc = CreateCompatibleDC(screen);
-    if (fontLabel_ != nullptr) SelectObject(dc, fontLabel_);
-
-    // 量出标签列宽与数值列宽，再算面板尺寸
-    int labelMax = 0;
-    int valueMax = 0;
-    for (const auto& row : model_.rows) {
+    const auto widthOf = [&](HFONT font, const std::wstring& text) {
+        if (text.empty()) return 0;
+        SelectObject(dc, font);
         SIZE s{};
-        SelectObject(dc, fontLabel_);
-        if (GetTextExtentPoint32W(dc, row.label.c_str(), static_cast<int>(row.label.size()), &s))
-            labelMax = std::max(labelMax, static_cast<int>(s.cx));
-        SelectObject(dc, fontValue_);
-        if (GetTextExtentPoint32W(dc, row.value.c_str(), static_cast<int>(row.value.size()), &s))
-            valueMax = std::max(valueMax, static_cast<int>(s.cx));
-        if (style_.showUnits && !row.unit.empty()) {
-            SelectObject(dc, fontLabel_);
-            if (GetTextExtentPoint32W(dc, row.unit.c_str(), static_cast<int>(row.unit.size()), &s))
-                valueMax = std::max(valueMax, static_cast<int>(s.cx));
-        }
+        if (!GetTextExtentPoint32W(dc, text.c_str(), static_cast<int>(text.size()), &s)) return 0;
+        return static_cast<int>(s.cx);
+    };
+
+    std::vector<int> labelW(count, 0);
+    std::vector<int> valueW(count, 0);
+    std::vector<int> unitW(count, 0);
+    int labelMax = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+        const HudRow& row = model_.rows[i];
+        labelW[i] = widthOf(fontLabel_, row.label);
+        valueW[i] = widthOf(fontValue_, row.value);
+        unitW[i] = (style_.showUnits && !row.unit.empty()) ? widthOf(fontSmall_, row.unit) : 0;
+        labelMax = std::max(labelMax, labelW[i]);
     }
-    // 标题参与测量（它是固定的），页脚故意不参与：页脚是状态行，不该把面板撑宽
-    SIZE s{};
-    SelectObject(dc, fontValue_);
-    if (GetTextExtentPoint32W(dc, model_.title.c_str(), static_cast<int>(model_.title.size()), &s))
-        valueMax = std::max(valueMax, static_cast<int>(s.cx));
-    if (!model_.subtitle.empty()) {
-        SelectObject(dc, fontSmall_);
-        if (GetTextExtentPoint32W(dc, model_.subtitle.c_str(), static_cast<int>(model_.subtitle.size()), &s))
-            valueMax = std::max(valueMax, static_cast<int>(s.cx));
+    const int titleW = std::max(widthOf(fontValue_, model_.title), widthOf(fontSmall_, model_.subtitle));
+
+    cells_.assign(count, Cell{});
+    int bodyHeight = 0;
+    int bodyWidth = 0;
+
+    if (!style_.horizontal) {
+        // ── 纵铺：每项一行；标签列、数值列、单位列各自成列（单位对齐才好扫读）──
+        labelWidth_ = labelMax;
+        valueColumnW_ = 0;
+        unitColumnW_ = 0;
+        for (std::size_t i = 0; i < count; ++i) {
+            valueColumnW_ = std::max(valueColumnW_, valueW[i]);
+            unitColumnW_ = std::max(unitColumnW_, unitW[i]);
+        }
+        int y = 0;
+        for (std::size_t i = 0; i < count; ++i) {
+            if (i > 0 && model_.rows[i].newGroup) y += groupGap;
+            cells_[i].y = y;
+            cells_[i].valueW = valueW[i];
+            cells_[i].unitW = unitW[i];
+            cells_[i].labelW = labelW[i];
+            y += lineHeight_;
+        }
+        bodyHeight = y;
+        // 宽度取高水位并量化到 16 px：数值位数会变（59% ↔ 100%），逐轮改窗口大小会让 DWM 重建重定向表面
+        const int rowW = labelWidth_ + gap + valueColumnW_ +
+                         (unitColumnW_ > 0 ? Scale(kUnitGapDp) + unitColumnW_ : 0);
+        contentWidth_ = std::max(contentWidth_, rowW);
+        bodyWidth = std::max(titleW, contentWidth_);
+    } else {
+        // ── 横铺：每项一列（标签在上、数值+单位在下），可换行 ──────────────
+        labelWidth_ = 0;
+        const int maxBody = std::max(Scale(style_.maxWidthDp) - padding * 2, Scale(kMinWidthDp));
+        int x = 0;
+        int y = 0;
+        int lineWidth = 0;
+        int lines = count > 0 ? 1 : 0;
+        for (std::size_t i = 0; i < count; ++i) {
+            const int cellW = std::max(labelW[i], valueW[i] + (unitW[i] > 0 ? unitGap + unitW[i] : 0));
+            const int step = cellW + (i > 0 && model_.rows[i].newGroup ? groupGap : (i > 0 ? gap : 0));
+            if (i > 0 && style_.wrap && x + step > maxBody) {
+                lineWidth = std::max(lineWidth, x - gap);
+                x = 0;
+                y += labelLine + lineHeight_;
+                ++lines;
+                cells_[i].x = 0;
+            } else {
+                x += step;
+                cells_[i].x = x - cellW;
+            }
+            cells_[i].y = y;
+            cells_[i].w = cellW;
+            cells_[i].valueW = valueW[i];
+            cells_[i].unitW = unitW[i];
+            cells_[i].labelW = labelW[i];
+            lineWidth = std::max(lineWidth, cells_[i].x + cellW);
+        }
+        bodyHeight = lines * (labelLine + lineHeight_);
+        bodyWidth = std::max(titleW, lineWidth);
+        // 对齐：横铺时按整行宽度在面板内平移（行宽要等全部排完才知道）
+        if (style_.align != 0 && bodyWidth > 0) {
+            std::vector<std::pair<int, int>> lineW;  // y → 该行实际宽度
+            for (const Cell& c : cells_) {
+                auto it = std::find_if(lineW.begin(), lineW.end(),
+                                       [&](const std::pair<int, int>& e) { return e.first == c.y; });
+                if (it == lineW.end())
+                    lineW.emplace_back(c.y, c.x + c.w);
+                else
+                    it->second = std::max(it->second, c.x + c.w);
+            }
+            for (Cell& c : cells_) {
+                auto it = std::find_if(lineW.begin(), lineW.end(),
+                                       [&](const std::pair<int, int>& e) { return e.first == c.y; });
+                if (it == lineW.end()) continue;
+                const int slack = std::max(bodyWidth - it->second - padding, 0);
+                c.x += style_.align == 1 ? slack / 2 : slack;
+            }
+        }
     }
     DeleteDC(dc);
     ReleaseDC(hwnd_, screen);
 
-    labelWidth_ = labelMax;
-    const int padding = Scale(kPaddingDp);
-    const int gap = Scale(kColumnGapDp);
-    const int titleW = Scale(150);
-    // 宽度取高水位并量化到 16 px：刷新时数值/单位位数会变（59% ↔ 100%），若每轮都跟着改窗口大小，
-    // DWM 会不断重建重定向表面，工作集随刷新次数线性上涨（实测 14 MB → 30 MB / 45 s）。
-    contentWidth_ = std::max(contentWidth_, valueMax);
-    const int wanted = padding * 2 + labelWidth_ + gap + contentWidth_;
-    const int clampedW = std::clamp(std::max(wanted, titleW), Scale(kMinWidthDp), Scale(kMaxWidthDp));
-    panelWidth_ = (clampedW + 15) & ~15;
+    // ── 面板尺寸（标题 + 主体 + 页脚）────────────────────────────────────
+    const int titleBlock = lineHeight_ + (model_.subtitle.empty() ? 0 : lineHeight_) + Scale(kTitleGapDp);
+    const int footerBlock = model_.footer.empty() ? 0 : lineHeight_ + Scale(kTitleGapDp);
+    panelHeight_ = padding * 2 + titleBlock + bodyHeight + footerBlock;
 
-    const int titleLines = (model_.subtitle.empty() ? 1 : 2) + (model_.footer.empty() ? 0 : 1);
-    panelHeight_ = padding * 2 + lineHeight_ * (titleLines + static_cast<int>(model_.rows.size())) +
-                   Scale(kTitleGapDp);
+    const int hardMax = style_.horizontal ? std::max(Scale(style_.maxWidthDp), Scale(kMaxWidthDp))
+                                          : Scale(kMaxWidthDp);
+    const int clampedW = std::clamp(bodyWidth + padding * 2, Scale(kMinWidthDp), hardMax);
+    const int quantized = (clampedW + 15) & ~15;
+    if (!style_.horizontal || quantized != panelWidth_) panelWidth_ = quantized;
+
+    // 主体起点在标题之后；把 cells_ 平移到窗口坐标
+    const int bodyTop = padding + titleBlock;
+    for (std::size_t i = 0; i < count; ++i) {
+        cells_[i].x += padding;
+        cells_[i].y += bodyTop;
+        cells_[i].w = style_.horizontal ? cells_[i].w : panelWidth_ - padding * 2;
+    }
 
     RECT cur{};
     GetWindowRect(hwnd_, &cur);
     const int curW = cur.right - cur.left;
     const int curH = cur.bottom - cur.top;
-    // 只认 16 px 级别的宽度变化（高度只在行数变化时才变），避免逐轮改大小
+    // 只认 16 px 级别的宽度变化（高度只在行数/换行变化时才变），避免逐轮改大小
     if (std::abs(curW - panelWidth_) >= 16 || curH != panelHeight_) {
         SetWindowPos(hwnd_, nullptr, 0, 0, panelWidth_, panelHeight_,
                      SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
@@ -282,47 +365,69 @@ void HudWindow::Paint() {
     }
     y += Scale(kTitleGapDp);
 
-    // 指标行：标签左对齐、数值右对齐、单位在数值右侧但用暗色
-    for (const auto& row : model_.rows) {
+    // 指标项：位置由 Refresh 的布局引擎给出（cells_ 与 model_.rows 一一对应），
+    // 这样纵铺/横铺/换行/分组间距的算法只有一份，Paint 只负责画。
+    for (std::size_t i = 0; i < model_.rows.size() && i < cells_.size(); ++i) {
+        const HudRow& row = model_.rows[i];
+        const Cell& c = cells_[i];
         const unsigned labelColor = row.available ? style_.label : style_.muted;
         const unsigned valueColor = !row.available ? style_.muted
+                                    : row.colorOverride != 0 ? row.colorOverride
                                     : row.emphasis ? style_.accent
                                                    : style_.value;
-        SelectObject(mem, fontLabel_);
-        SetTextColor(mem, ToColorRef(labelColor));
-        RECT labelRect{padding, y, padding + labelWidth_, y + lineHeight_};
-        DrawTextW(mem, row.label.c_str(), -1, &labelRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        if (!style_.horizontal) {
+            // 纵铺：标签左对齐、数值右对齐、单位在数值右侧（暗色）
+            SelectObject(mem, fontLabel_);
+            SetTextColor(mem, ToColorRef(labelColor));
+            RECT labelRect{padding, c.y, padding + labelWidth_, c.y + lineHeight_};
+            DrawTextW(mem, row.label.c_str(), -1, &labelRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
-        SelectObject(mem, fontValue_);
-        SIZE vs{};
-        GetTextExtentPoint32W(mem, row.value.c_str(), static_cast<int>(row.value.size()), &vs);
-        int unitW = 0;
-        if (style_.showUnits && !row.unit.empty()) {
-            SelectObject(mem, fontSmall_);
-            SIZE us{};
-            GetTextExtentPoint32W(mem, row.unit.c_str(), static_cast<int>(row.unit.size()), &us);
-            unitW = static_cast<int>(us.cx) + Scale(4);
+            // 纵铺：标签列左对齐、数值列右对齐（小数点成列）、单位列固定起点（单位成列）
+            const int valueColX = padding + labelWidth_ + Scale(style_.itemGapDp);
+            const int valueX = valueColX + std::max(valueColumnW_ - c.valueW, 0);
+            SelectObject(mem, fontValue_);
+            SetTextColor(mem, ToColorRef(valueColor));
+            RECT valueRect{valueX, c.y, valueX + c.valueW + 2, c.y + lineHeight_};
+            DrawTextW(mem, row.value.c_str(), -1, &valueRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            if (c.unitW > 0) {
+                const int unitX = valueColX + valueColumnW_ + Scale(kUnitGapDp);
+                SelectObject(mem, fontSmall_);
+                SetTextColor(mem, ToColorRef(style_.unit));
+                RECT unitRect{unitX, c.y, unitX + c.unitW + 2, c.y + lineHeight_};
+                DrawTextW(mem, row.unit.c_str(), -1, &unitRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            }
+        } else {
+            // 横铺：标签在上（小字暗色）、数值在下（大字亮色）、单位紧贴数值右侧
+            int cy = c.y;
+            if (style_.showLabels) {
+                SelectObject(mem, fontSmall_);
+                SetTextColor(mem, ToColorRef(labelColor));
+                RECT labelRect{c.x, cy, c.x + c.w, cy + lineHeight_};
+                DrawTextW(mem, row.label.c_str(), -1, &labelRect,
+                          DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+                cy += lineHeight_;
+            }
+            SelectObject(mem, fontValue_);
+            SetTextColor(mem, ToColorRef(valueColor));
+            RECT valueRect{c.x, cy, c.x + c.w, cy + lineHeight_};
+            DrawTextW(mem, row.value.c_str(), -1, &valueRect,
+                      DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            if (c.unitW > 0) {
+                const int unitX = c.x + c.valueW + Scale(kUnitGapDp);
+                SelectObject(mem, fontSmall_);
+                SetTextColor(mem, ToColorRef(style_.unit));
+                RECT unitRect{unitX, cy, unitX + c.unitW + 2, cy + lineHeight_};
+                DrawTextW(mem, row.unit.c_str(), -1, &unitRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            }
         }
-        const int valueRight = w - padding;
-        const int valueX = valueRight - unitW - static_cast<int>(vs.cx);
-        SelectObject(mem, fontValue_);
-        SetTextColor(mem, ToColorRef(valueColor));
-        RECT valueRect{valueX, y, valueX + vs.cx + 2, y + lineHeight_};
-        DrawTextW(mem, row.value.c_str(), -1, &valueRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-        if (unitW > 0) {
-            SelectObject(mem, fontSmall_);
-            SetTextColor(mem, ToColorRef(style_.unit));
-            RECT unitRect{valueRight - unitW + Scale(4), y, valueRight, y + lineHeight_};
-            DrawTextW(mem, row.unit.c_str(), -1, &unitRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-        }
-        y += lineHeight_;
     }
 
     if (!model_.footer.empty()) {
-        y += Scale(kTitleGapDp);
+        // 页脚钉在底部：布局引擎已经把它算进高度，不依赖上面累加的 y
+        const int footerY = h - padding - lineHeight_;
         SelectObject(mem, fontSmall_);
         SetTextColor(mem, ToColorRef(style_.unit));
-        RECT footerRect{padding, y, w - padding, y + lineHeight_};
+        RECT footerRect{padding, footerY, w - padding, footerY + lineHeight_};
         DrawTextW(mem, model_.footer.c_str(), -1, &footerRect,
                   DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
     }
