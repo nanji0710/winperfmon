@@ -1,8 +1,8 @@
-# M0 骨架 + M1 免驱遥测：构建 / 运行 / 验收
+# M0 骨架 + M1 免驱遥测 + M1 Ring0：构建 / 运行 / 验收
 
-本文件记录 **M0 骨架与 M1 免驱遥测**的**可复现构建与验收步骤**，供本机复核与 CI 复用。
-设计依据：`docs/winperfmon-dev-plan.md` §8 里程碑 M0/M1、§3.3.1 温度降级链（T0/T4）、§5 技术栈选型；
-实测证据：`docs/amd-facts.md` §9（ADL2 免驱 PM 表 + perflib 归因）、§1–§8；性能分段与内存阶梯见 `docs/winperfmon-dev-plan.md` §1、§6。
+本文件记录 **M0 骨架、M1 免驱遥测与 M1 Ring0 通道**的**可复现构建与验收步骤**，供本机复核与 CI 复用。
+设计依据：`docs/winperfmon-dev-plan.md` §8 里程碑 M0/M1、§3.3.1 温度降级链（T0/T1/T4）、§4 Ring0 访问与驱动方案（**必须提权**）、§5 技术栈选型；
+实测证据：`docs/amd-facts.md` §9（ADL2 免驱 PM 表 + perflib 归因）、§1–§8；Ring0 侧证据：`docs/ring0-pawnio.md` §3.1、§5.3–§5.5、§7；性能分段与内存阶梯见 `docs/winperfmon-dev-plan.md` §1、§6。
 
 ## 1. 工具链
 
@@ -63,7 +63,7 @@ build\wpm_tests.exe
 ctest --test-dir build --output-on-failure
 ```
 
-当前 **35 passed / 0 failed**（`test_cpu_native.cpp` 5 个纯函数用例、`test_gpu_enum.cpp` 8 个、`test_config.cpp` 16 个、`test_json.cpp` 6 个），覆盖：
+当前 **43 passed / 0 failed**（`test_cpu_native.cpp` 5 个纯函数用例、`test_gpu_enum.cpp` 8 个、`test_config.cpp` 16 个、`test_json.cpp` 6 个、**新增 8 个 Ring0 解码口径用例**），覆盖：
 
 - `json_*`：标量 / 对象 / 非法输入（尾随逗号、注释、未闭合 = 空串）/ 往返 / 深度与字节上限 / `\uXXXX` 转义
 - `config_*`：默认值稳定（13 项默认可见）、目录全展开、越界夹紧、未知丢弃 + 缺失追加、
@@ -72,6 +72,7 @@ ctest --test-dir build --output-on-failure
 - `catalog_*`：大小写不敏感查找、id 唯一且全小写
 - `cpu_native_*`：`BusyPercentFromDelta(idle0, busy0, idle1, busy1)` 的半忙=50%、全忙=100%/全闲=0%、**拒绝无效增量**（计数倒退、零增量、时钟未前进均返回 `-1`）、取值恒在 0–100
 - `gpu_resolve_*`：`gpu.selectedIndex` 解析契约 —— `auto` 选第一个有后端的适配器（跳过无后端者）、显式下标如实采用、**越界不得改选其它 GPU**、显式指向无后端适配器 = 关闭而非回退、无可用后端/空调配器列表的返回、**不可用时也必须写出原因原文**
+- **Ring0 解码口径（新增 8 个用例）**：SMN 温度往返与无效判定、SVI 电压解码与越界、每核频率比值与坏差分、Intel 封装温度、能量单位
 
 ## 5. M0 验收记录（本机，2026-10）
 
@@ -167,8 +168,65 @@ ctest --test-dir build --output-on-failure
 判据（与 §5 一致）：**读不到就说明原因，不显示 0**；设置页的 `gpu.selectedIndex`
 选项基于**折叠后**的适配器列表（本机 2 项：AMD 核显 + WARP）。
 
-## 7. 下一步（M1 的 Ring0 部分）
+## 7. M1 Ring0 真机验收（PawnIO 2.2.0 + 官方 AMD 模块，**需管理员**）
 
-M1 的**免驱部分已完成**（见 §6：ADL2 PM 表 + 原生 CPU 通道 + 惰性 ACPI 兜底，内存 11.88 MB、冷启动 45.8 ms、整轮采样 0.92 ms）；剩余按 `docs/winperfmon-dev-plan.md` §8：
-PawnIO 集成、MSR（`APERF`/`MPERF`、`IA32_THERM_STATUS`、RAPL）、AMD SMN 温度（每核）、
-Super I/O 探测 + 风扇 RPM，以及笔记本的 EC / 厂商 WMI 降级链（§3.3.1）。
+前置：安装 PawnIO 2.2.0（服务 `PawnIO` = Running / 启动类型 Manual；驱动镜像落在 DriverStore，
+`DisplayVersion = 2.2.0.0`），并把官方模块 `.bin` 放到 `<exe 目录>\modules\`（本机 `build\modules\AMDFamily17.bin`）
+—— **PawnIO 安装器本身不带模块**。协议的判据与解码口径见 `docs/ring0-pawnio.md` §5。
+
+| # | 步骤 | 预期 |
+|---|---|---|
+| 1 | 以**管理员身份**打开终端 → `build\winperfmon.exe --probe` | 头部 `admin=true`、`pawnio=present`；出现 `[ring0]` 段，且位于 `[superio]` 之后、`[gpu]` 之前 |
+| 2 | 看 `[ring0]` 身份字段 | `ring0.vendor=AMD`、`ring0.device=\\?\GLOBALROOT\Device\PawnIO`、`ring0.driverVersion=2.2.0.0`、`ring0.module=loaded`、`ring0.perCore=16/16` |
+| 3 | 看 SMN 温度 | `ring0.smn.tempRaw=0x774B0000` → `ring0.smn.tempC=70.2`（`raw >> 21 / 8 − 49`，**Tctl 口径**） |
+| 4 | 看电压（本机） | `ring0.smn.coreVoltageV=n/a`、`ring0.smn.voltageRaw=0x00000000`、`ring0.smn.tfn=0x00000000`，并带 `ring0.smn.voltageNote` 原因原文 —— **读不到就说明原因，不显示 0** |
+| 5 | 看封装功耗 | `ring0.pwrUnitRaw=0x000A1003`（ESU = 16 → 能量单位 `2^-16 J` = 15.2588 µJ）、`ring0.pkgPowerW=25.8` |
+| 6 | `build\winperfmon.exe --all` | 50 项汇总：**可用 13 / 本机无 12 / 待接入通道 25 / 错误 0**（与 §6 免驱的 13/10/27 **口径不同，不得混用**） |
+| 7 | `build\winperfmon.exe --watch 12` | 采样 25 次：**平均 1.66 ms/次、最大 3.34 ms/次**；工作集 **11.96 MB** / 私有 **2.47 MB** / 峰值 **12.05 MB**；逐源 `cpu.ring0 0.65 ms`；`--probe` 的 `startupMs = 43.4`、`stepAvgMs = 1.66` |
+| 8 | `build\wpm_tests.exe` | **43 passed / 0 failed**（含 8 个 Ring0 解码口径用例，见 §4） |
+
+`--probe` 的 `[ring0]` 段逐字（本机 HP ZHAN66 14 G8a / Ryzen 7 H 255 / Radeon 780M / Win11 build 26300）：
+
+```ini
+ring0.vendor=AMD
+ring0.device=\\?\GLOBALROOT\Device\PawnIO
+ring0.driverVersion=2.2.0.0
+ring0.module=loaded
+ring0.modulePath=D:\GitHub\winperfmon\build\modules\AMDFamily17.bin
+ring0.smn.tempC=70.2
+ring0.smn.tempRaw=0x774B0000
+ring0.smn.coreVoltageV=n/a
+ring0.smn.voltageRaw=0x00000000
+ring0.smn.tfn=0x00000000
+ring0.smn.voltageNote=SVI2 平面与 TFN 全为 0：本机 SMU 不通过 SVI2 暴露电压（实测 Family 19h model 0x75 Hawk Point 恒为 0），0 不是 0 V、更不是 1.55 V，按读不到处理
+ring0.pkgPowerW=25.8
+ring0.pwrUnitRaw=0x000A1003
+ring0.perCore=16/16
+ring0.perCoreMHzMin=3713
+ring0.perCoreMHzMax=4529
+```
+
+**非管理员运行会怎样**：`--probe` 里 `pawnio=present`、`ring0Backend=PawnIO`，但
+`ring0.unavailableReason=打不开 PawnIO 设备（错误 5（拒绝访问。））` —— PawnIO 驱动 INF 给设备对象设的 ACL 是
+`D:P(A;;GA;;;SY)(A;;GA;;;BA)`，**只授权 SYSTEM 与 Administrators**，交互式用户没有任何权限位。
+因此 **Ring0 通道必须在提权进程里跑**；免驱路径（ADL2 + 原生 CPU 采样 + 惰性 ACPI）不受影响、也不需要提权
+（实测根因与 INF 原文见 `docs/ring0-pawnio.md` §3.1）。
+
+三条必须记住的口径（详见 `docs/ring0-pawnio.md` §5.3–§5.5、§7）：
+
+- **SVI2 电压在本机不可用**：`SVI0_TFN`(0x5A008) 与两个遥测平面在一次 20 s 提权采样（含 16 线程 CPU 满载）中整轮恒为 `0x00000000`
+  → `cpu.voltage` 如实判「不可用」。**`0` 不是 0 V、更不是 1.55 V** —— 把原始值 0 解码成 1.550 V 是假读数。
+- **SMN 温度是 Tctl 口径，不可与 ADL2 直接比较**：同一次 20 s 并发实验里 SMN 从 66.75 °C 升到峰值 **88.1 °C**（t ≈ 9 s）、
+  再衰减回 72.75 °C，而同窗口 ADL2 `TEMPERATURE_CPU` 只有 57–66 °C —— **相差 10–20 °C**（ACPI 热区更低且滞后约 20 s）。
+  故 `cpu.temp.package` 的 detail 必须写明这是 Tctl。
+- **MSR 封装能耗与 ADL2 互证**：`MSR_PKG_ENERGY_STAT`(0xC001029B) 差分（乘 `2^-16 J`）得空闲 **18–25 W** / 满载 **33–43 W**，
+  ADL2 `ASIC_POWER` 为空闲 21–24 W / 满载 32–42 W —— 两条独立路径一致。
+
+`cpu.freq.percore` 首帧按设计不可用，文案为：「APERF/MPERF 尚无两个采样点（第一轮只建基线）；每轮钉 4 核轮换，0.5 s 一轮」。
+
+## 8. 下一步（Ring0 之外仍未做的部分）
+
+M1 的**免驱部分与 Ring0 部分都已在本机验收通过**（免驱见 §6；Ring0 见 §7）。按 `docs/winperfmon-dev-plan.md` §8，
+仍未开始的是：**每核**温度与核心电压（当前 SMN 只给封装温度、SVI2 在本机读不到）、RAPL 每核功耗、
+Super I/O 探测 + 风扇 RPM、笔记本的 EC / 厂商 WMI 降级链（§3.3.1），以及 Intel 平台的电压口径（未在 Intel 机器上实测）。
+权威的「尚未做」清单见 `docs/ring0-pawnio.md` §8。

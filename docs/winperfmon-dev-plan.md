@@ -53,7 +53,7 @@
 ```
 
 **进程模型**
-- **v1**：单进程 + `requireAdministrator`（Ring0 与 ETW 都需要），实现最简单。
+- **v1**：单进程 + `requireAdministrator`（Ring0 与 ETW 都需要），实现最简单。**Ring0 侧已在真机上确认必须提权**：PawnIO 驱动给设备对象设的 ACL 只授权 SYSTEM 与 Administrators，非管理员只会拿到 `ring0.unavailableReason=打不开 PawnIO 设备（错误 5（拒绝访问。））`；免驱路径则完全不需要提权（见 §4 与 `docs/ring0-pawnio.md` §3.1、§7）。
 - **v2（推荐尽早拆）**：`pmsvc`(SYSTEM 服务，独占所有 Ring0/驱动访问) + `pmui`(普通权限 UI/Overlay)，命名管道 + 共享内存 IPC。好处：UI 不需要提权（Overlay 在游戏上更安全）、驱动访问与 UI 崩溃隔离、反作弊面更小。
 
 ---
@@ -145,6 +145,7 @@
 **T0 的定位与反伪造规则（AMD 实测，2026-10-14）**
 
 - AMD 上 T0 **先于 T1（Ring0 MSR/SMN）与 T4（ACPI 热区）生效**：`cpu.temp.package` 由 ADL2 PM 表提供，无需 PawnIO、无需管理员（本机实测 IsAdmin=False、未装 PawnIO、HVCI 开启）。Ring0 在 AMD 上不再是封装温度/功耗的唯一路径。
+- **T1（Ring0 SMN）的温度口径是 Tctl，不可与 T0 的 ADL2 直接比较（提权实测）**：同一 20 s 并发实验里，SMN `THM_TCON_CUR_TMP`（`0x59800`）随负载 66.75 °C → 峰值 **88.1 °C**（t ≈ 9 s）→ 衰减回 72.75 °C，而同窗口 ADL2 `TEMPERATURE_CPU` 只有 **57–66 °C**（ACPI 热区读数更低且滞后约 20 s）—— **相差 10–20 °C**（SMN 是 Tctl/控制温度，ADL2 PM 表是厂商 die/skin 口径）。因此 T0 在场时不让位给 T1，且 Ring0 给出的 `cpu.temp.package` 必须在 detail 里写明这是 Tctl。实测记录见 `docs/ring0-pawnio.md` §5.4、§7。
 - 响应速度实测（8 线程 CPU 满载 22 秒同时刻对照）：ADL2 在 1 秒内 `49 → 73–76 °C`；ACPI 热区 `48.1 → 60.1 °C`（1 °C 步进、约 1 °C / 2 秒，明显滞后）→ **ACPI 只作兜底**（provider 仅在槽位仍为空时写入），Intel 或无厂商 PM 表的机器才轮到它。
 - 同一通道的功耗口径：`cpu.power.package` 取 `ASIC_POWER`（APU 上即整片功耗，含 GPU 与 uncore）、`cpu.power.soc` 取 `SOC_POWER`；**不取 `CPU_POWER`**（0–6 W，量级与 28–45 W 的 TDP 级不符）。
 - **反伪造规则（GPU 功耗）**：核显（APU）上 CPU 与 GPU 共享供电轨，ADL2 的 `GFX_POWER` 在 **GPU 完全空闲**（`INFO_ACTIVITY_GFX` 仅 1–8%、`CLK_GFXCLK` 恒 800 MHz）、**CPU 满载**时仍报 24–34 W，与 `ASIC_POWER`（32–33 W）几乎重合 → **核显上不得把 `GFX_POWER` 当作 `gpu.power`**：一律返回"不可用"并给出理由原文「核显与 CPU 共享供电轨：ADL2 GFX_POWER 在 GPU 空载、CPU 满载时仍报 24–34 W，无法作为 GPU 功耗（整片功耗见 cpu.power.package）」。**独显**上 `GFX_POWER` 作为 GFX 供电轨读数照常采用。
@@ -259,6 +260,7 @@
   - 需要的模块（来自 `PawnIO.Modules`）：`IntelMSR.p`（MSR 读写）、`AMDFamily0F/10/17.p`（按 CPU family 选）、`RyzenSMU.p`（PM 表）、`LpcIO.p`（端口 I/O / Super I/O）。
   - 调用范式可直接照 nwinfo：`WR0_ExecPawn(h, &h->pio_intel, "ioctl_read_msr", &in, 1, &out, 1, NULL)`，并配 `--driver=CPUZ162|NwHwIo|PawnIO|NONE` 式回退链（找不到驱动 → 自动退免驱模式）。
   - 用 PawnIO 仍需**安装驱动 + 模块**，Windows 会弹"安装驱动"类安全提示 → 必须像 LHM PR #1777 那样提供**"禁用 Ring0 驱动安装"开关**，让用户能选纯免驱模式。
+  - **必须提权（实测根因）**：PawnIO 驱动的设备对象 ACL 来自其 INF（本机 `...\DriverStore\FileRepository\pawnio.inf_amd64_a72a2f969b8b7496\pawnio.inf`）里的 `HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;BA)"` —— **只授权 SYSTEM 与 Administrators**，交互式用户没有任何权限位。非管理员运行 `--probe` 会拿到 `pawnio=present` / `ring0Backend=PawnIO`，但 `ring0.unavailableReason=打不开 PawnIO 设备（错误 5（拒绝访问。））`。因此 **Ring0 通道只能在提权进程里跑**（与 §2 的 v1 `requireAdministrator` 一致）；**免驱路径（ADL2 + 原生 CPU 采样 + 惰性 ACPI）不受影响、无需提权**。详见 `docs/ring0-pawnio.md` §3.1、§7。
 - **许可处理（决策 ③=B 已定）**：`PawnIO`（驱动／安装包）为 **GPL-2.0**，`PawnIO.Modules`（`.bin` 模块）为 **LGPL-2.1**（GitHub REST API `license.spdx_id = LGPL-2.1`；仓库 `COPYING` 记 LGPL-2.1-or-later）。我们**不链接、不复制其源码**，只在运行期经 IOCTL 调用；**官方签名安装包随发布包附带**，首次运行检测未装则**引导用户确认后静默安装**（可拒绝 → 免驱模式），并随包提供其许可证原文与**对应源码获取说明**（驱动 GPL-2.0、模块 LGPL-2.1；若随包提供模块还须保证模块可被用户替换；发布前须做法务确认）。**不**拆发驱动 `.bin`/`.sys`，也**不**自研安装器与驱动签名。合规动作逐条见 `docs/release-github.md` §3.5。
 - **免驱动"轻量模式"（必须有）**：仅 PDH CPU 频率 + NVML/ADLX/IGCL GPU 全指标；CPU 温度/功耗/主板风扇显示 `N/A` 并给出明确原因提示。这条路径让工具在 Vanguard 等强反作弊环境下依然可用。
   - **AMD 例外（已实测）**：AMD 显卡驱动自带的 `atiadlxx.dll` 提供免驱 PM 表，**非管理员、无 Ring0** 即可读封装温度（`TEMPERATURE_CPU`）与整片功耗（`ASIC_POWER`）→ `cpu.temp.package` / `cpu.power.package` / `cpu.power.soc` 在 AMD 上**不属于**"显示 N/A"的那一类；Intel 上仍为 N/A（需 MSR DTS / RAPL）。反之核显上的 `gpu.power` 因共享供电轨被污染而**拒绝提供**。实测数据见 `docs/amd-facts.md` §9，温度链见 §3.3.1 的 T0。
@@ -356,7 +358,11 @@
 >
 > 本机实测（免驱全量）：**工作集 11.88 MB / 私有 2.46 MB / 峰值 12.07 MB**，**`startupMs = 45.8`**，整轮采样**平均 0.92 ms、最大 1.54 ms**；`--once` 汇总**可用 13 / 本机无 10 / 待接入通道 27 / 错误 0（合计 50）**。逐源成本、冷启动分段与内存阶梯见本文件 §6；验收步骤见 `docs/build-and-run.md` §6；ADL2 侧实测证据（含 perflib 归因）见 `docs/amd-facts.md` §9。
 >
-> **仍未开始的是 Ring0 部分**：PawnIO 集成、每核频率/温度与电压（`IA32_THERM_STATUS` / AMD SMN）、RAPL 每核功耗、Super I/O 与风扇 RPM、笔记本 EC 与厂商 WMI 链。
+> **M1 Ring0 验收注（替代上一条里「仍未开始的是 Ring0 部分」的判断）**：Ring0 通道已在**本机（HP ZHAN66 14 G8a / Ryzen 7 H 255 / Win11 build 26300）以管理员身份**、用 **PawnIO 2.2.0 + 官方 AMD 模块**跑通并通过验收 —— 每核频率 **16/16 核可用**（`perCoreMHzMin 3713` / `perCoreMHzMax 4529`）、SMN 封装温度（`tempRaw 0x774B0000` → **70.2 °C**）、MSR 封装能耗（`PWR_UNIT 0x000A1003` → ESU = 16 → 能量单位 `2^-16 J`，`pkgPowerW 25.8`）；`--all` 汇总 **可用 13 / 本机无 12 / 待接入通道 25 / 错误 0（合计 50）**；`--watch 12` **平均 1.66 ms/次、最大 3.34 ms/次**（25 次），工作集 **11.96 MB** / 私有 **2.47 MB** / 峰值 **12.05 MB**，逐源 `cpu.ring0 0.65 ms`，`startupMs = 43.4`；单测 **43 passed / 0 failed**（新增 8 个 Ring0 解码口径用例）。验收步骤见 `docs/build-and-run.md` §7，逐字输出与三条口径结论见 `docs/ring0-pawnio.md` §5.3–§5.5、§7。
+>
+> **两条产品级结论（已同步进 §3.3.1 与 §4）**：①**Ring0 通道必须提权** —— PawnIO 设备对象 ACL 只授权 SYSTEM 与 Administrators，非管理员只会拿到 `ring0.unavailableReason=打不开 PawnIO 设备（错误 5（拒绝访问。））`，免驱路径不受影响；②**SMN 温度是 Tctl 口径**，同负载下比 ADL2 高 10–20 °C，`cpu.temp.package` 的 detail 必须写明、不可直接比较。
+>
+> **仍未开始的**：**每核**温度与核心电压（通道已实现：AMD SMN 每核、SVI2 —— 但本机 SVI2 恒为 0，如实判「不可用」；Intel 侧只有单测口径、未在真机实测）、RAPL 每核功耗、Super I/O 与风扇 RPM、笔记本 EC 与厂商 WMI 链。
 
 ---
 

@@ -24,7 +24,9 @@ namespace wpm::sensors {
 struct PawnIoStatus {
   bool installed = false;        ///< 注册表里能读到安装版本号
   std::string version;           ///< DisplayVersion，未安装为空
+  bool elevated = false;         ///< 当前进程是否提升（设备 ACL 只给 SYSTEM + Administrators，见下）
   bool deviceOpened = false;     ///< \\.\PawnIO 打开成功
+  bool accessDenied = false;     ///< 驱动在但被 ACL 拒绝（错误 5）——非管理员进程的必然结果
   std::string deviceDetail;      ///< 打开失败原因或所用设备路径
   bool modulesAvailable = false; ///< 至少一个模块文件能在预期位置找到
   std::string modulesDetail;     ///< 找模块的结果（找到的目录、缺失的文件名）
@@ -73,6 +75,8 @@ class PawnIoDevice {
 
   bool opened() const noexcept { return handle_ != nullptr; }
   const std::string& devicePath() const noexcept { return devicePath_; }
+  /// 上一次打开失败是否因权限（错误 5）。驱动在但进程未提升时为 true。
+  bool accessDenied() const noexcept { return accessDenied_; }
 
   /// 打开设备（幂等）。失败返回 false 并写 detail（未安装 / 驱动未启动 / 权限）。
   bool Open(std::string* detail);
@@ -89,6 +93,7 @@ class PawnIoDevice {
   void* handle_ = nullptr;
   std::string devicePath_;
   std::string openError_;
+  bool accessDenied_ = false;
 
   friend class PawnIoModule;
 };

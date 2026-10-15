@@ -21,8 +21,9 @@ namespace wpm::sensors {
 /// 读数位（bits[31:21]）为 0 表示传感器未就绪，或解码结果不在 (0, 125] 时返回 false。
 bool DecodeAmdSmnTemp(uint32_t raw, double* celsius);
 
-/// AMD SVI2 遥测原始值 → 伏特（`1.55 − 6.25 mV × (raw & 0xFFFFFF)`）。
-/// 结果不在 0.30–1.60 V（含 vid 全 0 的 0xFFFFFF 截断异常）时返回 false。
+/// AMD SVI2 遥测原始值 → 伏特（LHM 口径：`1.55 − 6.25 mV × ((raw >> 16) & 0xFF)`）。
+/// 原始值为 0 表示该平面没有遥测（**不是** 1.55 V），或结果不在 0.30–1.60 V 时返回 false。
+/// 本机（Family 19h model 0x75，Hawk Point）实测 0x5A008/0x5A00C/0x5A010 恒为 0。
 bool DecodeAmdSviVoltage(uint32_t raw, double* volts);
 
 /// APERF/MPERF 差分 → MHz（`baseClockMHz × ΔAPERF / ΔMPERF`）。
@@ -66,6 +67,8 @@ class CpuRing0Provider final : public ISensorProvider {
     uint32_t voltageOffset = 0;
     uint32_t voltageRaw = 0;
     double voltageV = 0.0;
+    uint32_t tfnRaw = 0;              ///< SVI0_TFN（bit0/bit1 置位 = 对应平面读不出）
+    std::string voltageNote;          ///< 电压读不到时的具体原因（写进降级文案）
     bool pkgEnergyOk = false;
     double pkgPowerW = 0.0;
     uint32_t pwrUnitRaw = 0;
@@ -99,13 +102,17 @@ class CpuRing0Provider final : public ISensorProvider {
   bool ReadAmdPackageTemp(double* celsius, uint32_t* raw);
 
   /// AMD：读 SVI2 遥测平面，取一个落在合理区间的核心电压。
-  bool ReadAmdCoreVoltage(double* volts, uint32_t* offset, uint32_t* raw);
+  /// TFN（SVI0_TFN，+0x8）的 bit0/bit1 置位表示对应平面读不出；平面偏移随型号不同
+  /// （Zen 3 与 Zen 1/2 的 +0xC/+0x10 是反的），由 amdModel_ 决定。
+  bool ReadAmdCoreVoltage(double* volts, uint32_t* offset, uint32_t* raw, uint32_t* tfn,
+                          std::string* note);
 
   size_t SlotOf(const char* id) const;
 
   std::vector<size_t> slots_;
   bool available_ = false;
   bool amd_ = false;
+  uint32_t amdModel_ = 0;  ///< CPUID 的型号（family 0x19 下 0x75 = Hawk Point）
   std::string initDetail_;
   std::string note_;
 

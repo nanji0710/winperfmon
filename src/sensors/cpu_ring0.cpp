@@ -4,6 +4,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cpuid.h>
 #include <cstdio>
 
 #include "config/catalog.h"
@@ -16,9 +17,38 @@ namespace {
 // —— AMD SMN 偏移（来自 LibreHardwareMonitor 的 Amd17Cpu 常量表；SMN = 通过 ioctl_read_smn 访问的
 //    内部间接寻址空间，不是 PCI 配置空间） ——
 constexpr uint32_t kSmnThmTcon = 0x00059800;   // THM_TCON_CUR_TMP：bits[31:21] 温度读数
-constexpr uint32_t kSmnSviTfn = 0x0005A008;    // SVI2 遥测：哪一路平面有效
-constexpr uint32_t kSmnSviPlane0 = 0x0005A00C; // SVI2 遥测平面 0
-constexpr uint32_t kSmnSviPlane1 = 0x0005A010; // SVI2 遥测平面 1
+constexpr uint32_t kSmnSviTfn = 0x0005A008;    // SVI0_TFN：bit0/bit1 置位 = 对应平面读不出
+constexpr uint32_t kSmnSvi = 0x0005A000;       // F17H_M01H_SVI 基址，平面偏移随型号不同
+
+// SVI2 遥测平面偏移（LHM Amd17Cpu 的 switch）：Zen 3 与 Zen 1/2 的 +0xC/+0x10 是反的，
+// 取错偏移会解出一个看似合理、实则属于另一路电源的电压。
+//   0x31（Threadripper 3000）→ plane0 = +0x14, plane1 = +0x10
+//   0x21（Zen 3）/ 0x44（Zen 5）→ plane0 = +0x10, plane1 = +0xC
+//   其它（含 0x75 Hawk Point）→ plane0 = +0xC, plane1 = +0x10
+void SviPlaneOffsets(uint32_t model, uint32_t* plane0, uint32_t* plane1) {
+  switch (model) {
+    case 0x31:
+      *plane0 = kSmnSvi + 0x14;
+      *plane1 = kSmnSvi + 0x10;
+      break;
+    case 0x21:
+    case 0x44:
+      *plane0 = kSmnSvi + 0x10;
+      *plane1 = kSmnSvi + 0x0C;
+      break;
+    default:
+      *plane0 = kSmnSvi + 0x0C;
+      *plane1 = kSmnSvi + 0x10;
+      break;
+  }
+}
+
+/// AMD 型号（CPUID.1.EAX 的 extModel<<4 | baseModel）。仅用于选 SVI 平面偏移。
+uint32_t AmdCpuModel() {
+  unsigned eax = 0, ebx = 0, ecx = 0, edx = 0;
+  if (__get_cpuid(1, &eax, &ebx, &ecx, &edx) == 0) return 0;
+  return ((eax >> 16) & 0xFu) << 4 | ((eax >> 4) & 0xFu);
+}
 
 // —— AMD MSR ——
 constexpr uint32_t kMsrMperf = 0xC00000E7;        // MPERF：基准频率节拍
@@ -62,7 +92,10 @@ bool DecodeAmdSmnTemp(uint32_t raw, double* celsius) {
 }
 
 bool DecodeAmdSviVoltage(uint32_t raw, double* volts) {
-  const uint32_t vid = raw & 0xFFFFFFu;
+  // 0 = 该平面没有遥测。LHM 不判这一条，于是会把"读不到"显示成 1.55 V —— 本机实测正是这种
+  // 情况（0x5A008/0x5A00C/0x5A010 恒为 0），所以这里必须拒绝，而不是报一个漂亮但假的电压。
+  if (raw == 0) return false;
+  const uint32_t vid = (raw >> 16) & 0xFFu;  // SVI0_PLANEX_VDDCOR [24:16]，见 LHM Amd17Cpu
   const double v = 1.55 - 0.00625 * static_cast<double>(vid);
   if (v < 0.30 || v > 1.60) return false;
   *volts = v;
@@ -124,6 +157,8 @@ bool CpuRing0Provider::Init(std::string& detail) {
     detail = "未识别的 CPU 厂商（品牌串：" + brand + "），Ring0 指标暂只支持 AMD / Intel";
     return false;
   }
+  // 型号只用来选 SVI2 平面偏移（Zen 3 与 Zen 1/2 相反）。品牌串不可靠，走 CPUID。
+  if (amd_) amdModel_ = AmdCpuModel();
 
   auto* dev = PawnIoDevice::Instance();
   std::string openDetail;
@@ -198,23 +233,39 @@ bool CpuRing0Provider::ReadAmdPackageTemp(double* celsius, uint32_t* raw) {
   return true;
 }
 
-bool CpuRing0Provider::ReadAmdCoreVoltage(double* volts, uint32_t* offset, uint32_t* raw) {
-  uint32_t tfn = 0;
-  const bool haveTfn = ReadSmn(kSmnSviTfn, &tfn);
-  // TFN 的 bit0 指示平面 0 的遥测落在 +0xC 还是 +0x10（不同代 SMU 相反）；两种都试，
-  // 以「解码后落在合理区间」为准，并把实际采用的偏移回传给诊断输出。
-  const uint32_t first = (haveTfn && (tfn & 1u)) ? kSmnSviPlane1 : kSmnSviPlane0;
-  const uint32_t second = (first == kSmnSviPlane0) ? kSmnSviPlane1 : kSmnSviPlane0;
-  for (uint32_t off : {first, second}) {
+bool CpuRing0Provider::ReadAmdCoreVoltage(double* volts, uint32_t* offset, uint32_t* raw,
+                                          uint32_t* tfn, std::string* note) {
+  uint32_t planes[2] = {0, 0};
+  SviPlaneOffsets(amdModel_, &planes[0], &planes[1]);
+
+  uint32_t tfnValue = 0;
+  const bool haveTfn = ReadSmn(kSmnSviTfn, &tfnValue);
+  if (tfn != nullptr) *tfn = tfnValue;
+  // SVI0_TFN 的 bit0/bit1 是「该平面读不出」的标志位（LHM 判据：`(tfn & 1) == 0` 才认为 Core 有效；
+  // Ryzen 7000/9000 上它干脆强制跳过两个平面）。TFN 自己都读不到时，两个平面都试一遍。
+  const bool usable0 = !haveTfn || (tfnValue & 0x01u) == 0;
+  const bool usable1 = !haveTfn || (tfnValue & 0x02u) == 0;
+  const bool usable[2] = {usable0, usable1};
+
+  bool sawNonZero = false;
+  for (int i = 0; i < 2; ++i) {
+    if (!usable[i]) continue;
     uint32_t v = 0;
-    if (!ReadSmn(off, &v)) continue;
+    if (!ReadSmn(planes[i], &v)) continue;
+    if (v != 0) sawNonZero = true;
     double decoded = 0.0;
     if (DecodeAmdSviVoltage(v, &decoded)) {
       *volts = decoded;
-      if (offset != nullptr) *offset = off;
+      if (offset != nullptr) *offset = planes[i];
       if (raw != nullptr) *raw = v;
       return true;
     }
+  }
+  if (note != nullptr) {
+    *note = sawNonZero
+                ? "SVI2 平面读到了非零值但解码后落在合理区间（0.30–1.60 V）之外，按读不到处理"
+                : "SVI2 平面与 TFN 全为 0：本机 SMU 不通过 SVI2 暴露电压（实测 Family 19h "
+                  "model 0x75 Hawk Point 恒为 0），0 不是 0 V、更不是 1.55 V，按读不到处理";
   }
   return false;
 }
@@ -371,7 +422,9 @@ void CpuRing0Provider::Sample(Snapshot& snap) {
       uint32_t raw = 0;
       if (ReadAmdPackageTemp(&c, &raw)) {
         setOk(tempSlot_, c, "来源：SMN THM_TCON_CUR_TMP（0x00059800，读数 " +
-                                std::to_string((raw >> 21) & 0x7FFu) + " → (读数/8)−49 °C，Ring0）");
+                                std::to_string((raw >> 21) & 0x7FFu) +
+                                " → (读数/8)−49 °C，Ring0）；注意这是 Tctl 口径，本机实测比 ADL2 "
+                                "TEMPERATURE_CPU 高 10–20 °C，两者不可直接比较");
       } else {
         setNa(tempSlot_, "SMN 温度读数不可用（0 或超出合理区间；Ring0 THM_TCON_CUR_TMP）");
       }
@@ -396,14 +449,16 @@ void CpuRing0Provider::Sample(Snapshot& snap) {
       setNa(voltSlot_, "Intel 核心电压需要 SVID 表且各代口径不同，M1 不提供（不猜）");
     } else {
       double v = 0.0;
-      uint32_t off = 0, raw = 0;
-      if (ReadAmdCoreVoltage(&v, &off, &raw)) {
-        char buf[160]{};
+      uint32_t off = 0, raw = 0, tfn = 0;
+      std::string why;
+      if (ReadAmdCoreVoltage(&v, &off, &raw, &tfn, &why)) {
+        char buf[192]{};
         std::snprintf(buf, sizeof(buf),
-                      "来源：SMN SVI2 遥测 0x%05X（1.55 V − 6.25 mV × vid，Ring0）", off);
+                      "来源：SMN SVI2 遥测 0x%05X（1.55 V − 6.25 mV × vid，Ring0；型号 0x%02X）",
+                      off, amdModel_);
         setOk(voltSlot_, v, buf);
       } else {
-        setNa(voltSlot_, "SVI2 遥测两个平面的解码值都不在合理区间（0.30–1.60 V），判为读不到");
+        setNa(voltSlot_, why);
       }
     }
   }
@@ -466,7 +521,8 @@ CpuRing0Provider::Diag CpuRing0Provider::Probe() {
   }
   d.perCoreTotal = coreCount_;
   d.smnTempOk = ReadAmdPackageTemp(&d.smnTempC, &d.smnTempRaw);
-  d.voltageOk = ReadAmdCoreVoltage(&d.voltageV, &d.voltageOffset, &d.voltageRaw);
+  d.voltageOk = ReadAmdCoreVoltage(&d.voltageV, &d.voltageOffset, &d.voltageRaw, &d.tfnRaw,
+                                   &d.voltageNote);
   uint64_t unit = 0;
   if (ReadMsr(amd_ ? kMsrPwrUnit : kMsrRaplPwrUnit, &unit)) {
     d.pwrUnitRaw = static_cast<uint32_t>(unit);

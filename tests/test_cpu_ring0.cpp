@@ -42,16 +42,22 @@ WPM_TEST(ring0_smn_temp_rejects_not_ready) {
 
 WPM_TEST(ring0_svi_voltage_decode) {
     double v = 0.0;
-    WPM_CHECK(DecodeAmdSviVoltage(0u, &v));  // vid = 0 → 1.55 V
-    WPM_CHECK_NEAR(v, 1.55, 1e-9);
-    WPM_CHECK(DecodeAmdSviVoltage(88u, &v));  // vid = 88 → 1.55 − 0.55 = 1.00 V
+    // 原始值 0 = 该平面没有遥测（本机实测恒为 0）。绝不能解成 1.55 V —— 那是个漂亮但假的读数。
+    WPM_CHECK(!DecodeAmdSviVoltage(0u, &v));
+    WPM_CHECK(DecodeAmdSviVoltage((88u << 16) | 0xFFFFu, &v));  // 低 16 位是电流等其它数据，必须掩掉
+    WPM_CHECK_NEAR(v, 1.00, 1e-9);
+    WPM_CHECK(DecodeAmdSviVoltage(0x20u << 16, &v));  // vid = 32 → 1.55 − 0.20 = 1.35 V
+    WPM_CHECK_NEAR(v, 1.35, 1e-9);
+    WPM_CHECK(DecodeAmdSviVoltage(88u << 16, &v));  // vid = 88 → 1.55 − 0.55 = 1.00 V
     WPM_CHECK_NEAR(v, 1.00, 1e-9);
 }
 
 WPM_TEST(ring0_svi_voltage_rejects_out_of_range) {
     double v = 0.0;
-    WPM_CHECK(!DecodeAmdSviVoltage(0xFFFFFFu, &v));  // vid 全 1 → 负数
-    WPM_CHECK(!DecodeAmdSviVoltage(250u, &v));       // 1.55 − 1.5625 < 0
+    WPM_CHECK(!DecodeAmdSviVoltage(0x00FF0000u, &v));  // vid = 0xFF → 1.55 − 1.594 < 0
+    WPM_CHECK(!DecodeAmdSviVoltage(250u << 16, &v));   // vid = 250 → 1.55 − 1.5625 < 0
+    WPM_CHECK(DecodeAmdSviVoltage(1u, &v));  // 低 16 位非零、vid = 0 → 编码上限 1.55 V
+    WPM_CHECK_NEAR(v, 1.55, 1e-9);
 }
 
 WPM_TEST(ring0_per_core_mhz_ratio) {

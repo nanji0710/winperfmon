@@ -618,7 +618,13 @@ void PrintProbe(const Config& cfg, const wpm::config::ConfigPaths& paths,
             std::printf("ring0.smn.coreVoltageV=%.4f\n", d.voltageV);
             std::printf("ring0.smn.voltageOffset=0x%05X\n", d.voltageOffset);
             std::printf("ring0.smn.voltageRaw=0x%08X\n", d.voltageRaw);
+        } else if (d.amd) {
+            // 读不到就说清为什么：本机实测 SVI2 平面与 TFN 恒为 0，这里如实报 n/a
+            std::printf("ring0.smn.coreVoltageV=n/a\n");
+            std::printf("ring0.smn.voltageRaw=0x%08X\n", d.voltageRaw);
         }
+        if (d.amd) std::printf("ring0.smn.tfn=0x%08X\n", d.tfnRaw);
+        if (!d.voltageNote.empty()) std::printf("ring0.smn.voltageNote=%s\n", d.voltageNote.c_str());
         if (d.pkgEnergyOk) std::printf("ring0.pkgPowerW=%.1f\n", d.pkgPowerW);
         std::printf("ring0.pwrUnitRaw=0x%08X\n", d.pwrUnitRaw);
         std::printf("ring0.perCore=%u/%u\n", d.perCoreSampled, d.perCoreTotal);

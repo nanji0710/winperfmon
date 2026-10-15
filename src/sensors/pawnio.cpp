@@ -46,6 +46,17 @@ std::string Win32ErrorText(DWORD code) {
   return text;
 }
 
+/// 当前进程是否提升（PawnIO 设备只授权 SYSTEM 与 Administrators，见 Open() 的说明）。
+bool IsElevatedProcess() {
+  HANDLE token = nullptr;
+  if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token) == FALSE) return false;
+  TOKEN_ELEVATION elevation = {};
+  DWORD size = sizeof(elevation);
+  const BOOL ok = GetTokenInformation(token, TokenElevation, &elevation, size, &size);
+  CloseHandle(token);
+  return ok != FALSE && elevation.TokenIsElevated != 0;
+}
+
 /// 可执行文件所在目录（不带尾随反斜杠）。失败返回空串。
 std::wstring ExecutableDir() {
   wchar_t buf[MAX_PATH * 2] = {};
@@ -120,6 +131,8 @@ PawnIoDevice::~PawnIoDevice() {
 bool PawnIoDevice::Open(std::string* detail) {
   if (handle_ != nullptr) return true;
   DWORD last = 0;
+  std::string firstPath;
+  DWORD firstError = 0;
   for (const wchar_t* candidate : kDevicePaths) {
     HANDLE h = CreateFileW(candidate, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -128,12 +141,31 @@ bool PawnIoDevice::Open(std::string* detail) {
       devicePath_ = text::toUtf8(candidate);
       return true;
     }
-    last = GetLastError();
+    const DWORD err = GetLastError();
+    if (firstError == 0) {
+      firstPath = text::toUtf8(candidate);
+      firstError = err;
+    }
+    last = err;
   }
   openError_ = Win32ErrorText(last);
+  accessDenied_ = (last == ERROR_ACCESS_DENIED || firstError == ERROR_ACCESS_DENIED);
   if (detail != nullptr) {
-    *detail = "打不开 PawnIO 设备（" + openError_ + "）；需先安装官方 PawnIO 驱动"
-              "（https://pawnio.eu 或 github.com/namazso/PawnIO.Setup/releases）";
+    if (accessDenied_) {
+      // 驱动在，但没有权限：PawnIO 的 INF 把设备对象 ACL 写死为
+      //   [Custom_Security] HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;BA)"
+      // 即只有 SYSTEM 与 Administrators 拿到 GENERIC_ALL，交互式用户什么都没有。
+      // 因此 Ring0 通道（MSR/SMN/EC）必然要求提升后的进程；免驱路径不受影响。
+      *detail = "PawnIO 驱动已就绪，但设备拒绝访问（" + openError_ +
+                "）：驱动 INF 把设备 ACL 限定为 SYSTEM 与 Administrators"
+                "（D:P(A;;GA;;;SY)(A;;GA;;;BA)），Ring0 通道需以管理员身份运行 winperfmon；"
+                "不想提权就用免驱模式（默认路径，ADL2 + 原生 CPU 采样，不需要管理员）";
+    } else {
+      *detail = "打不开 PawnIO 设备（" + openError_ + "；" + firstPath + " → " +
+                Win32ErrorText(firstError) +
+                "）；需先安装官方 PawnIO 驱动（https://pawnio.eu 或 "
+                "github.com/namazso/PawnIO.Setup/releases）";
+    }
   }
   return false;
 }
@@ -275,10 +307,12 @@ PawnIoStatus ProbePawnIo() {
   PawnIoStatus status;
   status.version = InstalledVersion();
   status.installed = !status.version.empty();
+  status.elevated = IsElevatedProcess();
 
   PawnIoDevice* device = PawnIoDevice::Instance();
   std::string openDetail;
   status.deviceOpened = device->Open(&openDetail);
+  status.accessDenied = device->accessDenied();
   status.deviceDetail = status.deviceOpened ? ("已打开 " + device->devicePath()) : openDetail;
 
   // 模块探测：只检查文件是否存在（不在探测阶段真的载入，避免副作用）。
