@@ -16,13 +16,20 @@
 #include "config/config.h"
 #include "config/store.h"
 #include "core/text.h"
+#include "sensors/acpi_thermal.h"
+#include "sensors/adl2.h"
+#include "sensors/cpu_native.h"
 #include "sensors/cpu_pdh.h"
+#include "sensors/gpu_enum.h"
 #include "sensors/memory.h"
 #include "sensors/sensor.h"
 
 #include <windows.h>
+#include <psapi.h>
 
+#include <algorithm>
 #include <cstdio>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -35,6 +42,49 @@ using wpm::sensors::Snapshot;
 using wpm::sensors::Status;
 
 FILE* g_out = nullptr;
+
+// QPC 打点：`docs/winperfmon-dev-plan.md` 的冷启动预算（≤300 ms）必须靠分段计时校准，
+// 否则"哪个阶段慢"只能靠猜。QueryPerformanceFrequency 每次调用都由内核缓存，开销可忽略。
+double NowMs() {
+    LARGE_INTEGER f{}, c{};
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&c);
+    return static_cast<double>(c.QuadPart) * 1000.0 / static_cast<double>(f.QuadPart);
+}
+
+// 进程进入 wmain 的第一件事就是取它，作为"冷启动"计时原点。
+double g_processStartMs = 0.0;
+
+// 工作集（常驻内存）自测：常驻内存预算 ≤15 MB（含 FPS ≤25 MB）是硬指标，
+// 在程序内自报可让验收不依赖外部工具，也让回归可脚本化比对。
+// 三个数各有用途：工作集 = 预算口径；私有 = 真正"自己吃掉的"提交内存（堆/栈/私有段，
+// 不含共享 DLL 页）；峰值 = 抖动上限。只有把它们分开，超标时才知道该优化谁。
+struct MemUsage {
+    double workingSetMb = -1.0;
+    double privateMb = -1.0;
+    double peakWorkingSetMb = -1.0;
+};
+MemUsage ReadMemUsage() {
+    MemUsage m;
+    PROCESS_MEMORY_COUNTERS_EX pmc{};
+    if (GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc),
+                             sizeof(pmc))) {
+        m.workingSetMb = static_cast<double>(pmc.WorkingSetSize) / (1024.0 * 1024.0);
+        m.privateMb = static_cast<double>(pmc.PrivateUsage) / (1024.0 * 1024.0);
+        m.peakWorkingSetMb = static_cast<double>(pmc.PeakWorkingSetSize) / (1024.0 * 1024.0);
+    }
+    return m;
+}
+
+// 内存分段打点：超标时要知道"哪一阶段吃掉的钱"，否则只能对总数猜。
+// 只在诊断路径（--watch 尾部统计 / --probe 的 [timing]）输出，采样热路径零开销。
+struct MemMarkEntry {
+    std::string name;
+    MemUsage mem;
+};
+std::vector<MemMarkEntry> g_memMarks;
+void MemMark(const std::string& name) { g_memMarks.push_back({name, ReadMemUsage()}); }
+void MemMark(const char* name) { g_memMarks.push_back({name, ReadMemUsage()}); }
 
 // 输出通道选择：**优先沿用调用方已经接好的标准句柄**。
 // 只有句柄无效（双击运行、无父 shell）时才去 AttachConsole/AllocConsole。
@@ -97,27 +147,114 @@ class Collector {
 public:
     Collector() : publisher_(std::make_unique<wpm::sensors::SnapshotPublisher>()) {}
 
-    bool Init(std::string& report) {
-        providers_.push_back(std::make_unique<wpm::sensors::MemoryProvider>());
-        providers_.push_back(std::make_unique<wpm::sensors::CpuPdhProvider>());
-        bool any = false;
-        for (auto& p : providers_) {
-            std::string detail;
-            const bool ok = p->Init(detail);
-            report += std::string("  ") + p->name() + ": " + (ok ? "就绪" : "不可用");
-            if (!detail.empty()) report += "（" + detail + "）";
-            report += "\n";
-            any = any || ok;
+    bool Init(const Config& cfg, std::string& report) {
+        const double tInit = NowMs();
+        // ① GPU 适配器枚举 + gpu.selectedIndex 解析。
+        //    必须显式解析：本机 Win32_VideoController/DXGI 会报出多个虚拟显示适配器
+        //    （GameViewer / OrayIddDriver / Honor），盲取第一个会拿到没有遥测的那个。
+        gpuAdapters_ = wpm::sensors::EnumerateGpuAdapters();
+        gpuSelectedCfg_ = cfg.gpu.selectedIndex;
+        gpuSelected_ = wpm::sensors::ResolveSelectedGpu(gpuAdapters_, gpuSelectedCfg_, gpuNote_);
+        initTimings_.push_back({"gpu-enum", NowMs() - tInit});
+        MemMark("DXGI 枚举后");
+        {
+            Snapshot& snap = publisher_->Writable();
+            snap.gpuAdapterCount = static_cast<int>(gpuAdapters_.size());
+            snap.gpuSelectedIndex = gpuSelected_;
+            for (const auto& g : gpuAdapters_) {
+                if (g.index == gpuSelected_) snap.gpuName = g.name;
+            }
+            if (snap.gpuName.empty() && !gpuAdapters_.empty()) {
+                // 诚实降级：明确说清「没有任何 GPU 在提供读数」，并把本机枚举到的适配器列出来，
+                // 避免用户误以为表格里的数字来自其中某一块 GPU。
+                std::string list;
+                for (const auto& g : gpuAdapters_) {
+                    if (!list.empty()) list += " / ";
+                    list += g.name;
+                }
+                snap.gpuName = "（未选中任何带遥测的适配器；本机枚举到：" + list + "）";
+            }
         }
+
+        // ② provider 顺序 = 优先级。更精确的 die 级数据源排在前面，
+        //    后面的 provider 会让位（AcpiThermalProvider 跳过已被填好的槽位）。
+        //    这个顺序同时决定**同一轮内的采样顺序**：adl2 先跑，cpu.native 才能拿到
+        //    本轮刚写入的 cpu.freq.avg 做频率加权（见 CpuNativeProvider::Sample）。
+        providers_.push_back(std::make_unique<wpm::sensors::MemoryProvider>());
+        const bool hasAdl2 = std::any_of(gpuAdapters_.begin(), gpuAdapters_.end(),
+                                        [](const wpm::sensors::GpuAdapter& g) {
+                                            return g.backend == "ADL2";
+                                        });
+        if (hasAdl2) {
+            auto adl = std::make_unique<wpm::sensors::Adl2Provider>();
+            adl->SetGpuContext(gpuAdapters_, gpuSelected_);
+            adl2_ = adl.get();
+            providers_.push_back(std::move(adl));
+        }
+
+        bool any = false;
+        size_t inited = 0;
+        auto initPending = [&]() {
+            for (; inited < providers_.size(); ++inited) {
+                auto& p = providers_[inited];
+                std::string detail;
+                const double t0 = NowMs();
+                const bool ok = p->Init(detail);
+                initTimings_.push_back({p->name(), NowMs() - t0});
+                MemMark("provider:" + std::string(p->name()));
+                report += std::string("  ") + p->name() + ": " + (ok ? "就绪" : "不可用");
+                if (!detail.empty()) report += "（" + detail + "）";
+                report += "\n";
+                any = any || ok;
+            }
+        };
+        // 先初始化内存与 GPU 侧：CPU 提供程序选哪条通道，取决于 ADL2 能否给出当前频率
+        initPending();
+
+        // ③ CPU 占用率 / 当前频率。ADL2 能给出当前频率（APU 上的 CLK_CPUCLK）时用原生
+        //    计数器算占用率：它不加载 PDH 计数器表，省下 4.3 MB 私有提交且单步更快
+        //    （见 docs/winperfmon-dev-plan.md 的常驻内存一节）。拿不到频率时退回 PDH——
+        //    % Processor Utility 与任务管理器完全同口径，那张表属于"该花的钱"。
+        if (adl2_ != nullptr && adl2_->Claims("cpu.freq.avg")) {
+            providers_.push_back(std::make_unique<wpm::sensors::CpuNativeProvider>());
+        } else {
+            providers_.push_back(std::make_unique<wpm::sensors::CpuPdhProvider>());
+        }
+        // ACPI 热区兜底：非管理员可读，但分辨率约 1 °C 且滞后可达 10 s，故排在 ADL2 之后。
+        // 它连 PDH 查询都是按需建立——被前面的源填满时一次都不建立。
+        {
+            auto acpi = std::make_unique<wpm::sensors::AcpiThermalProvider>();
+            acpi_ = acpi.get();
+            providers_.push_back(std::move(acpi));
+        }
+        initPending();
         // 未接线的指标统一标注原因，UI 才不会显示成 0
+        const double tPub = NowMs();
         Snapshot& snap = publisher_->Writable();
         MarkUnwiredByAvailability(snap);
         FillSysMetrics(snap);
         publisher_->Publish();
+        initTimings_.push_back({"首帧发布", NowMs() - tPub});
+        // 冷启动 = 进程入口 → 首帧可用快照
+        startupMs_ = NowMs() - g_processStartMs;
         return any;
     }
 
+    struct StageMs {
+        std::string name;
+        double ms = 0.0;
+    };
+    [[nodiscard]] const std::vector<StageMs>& InitTimings() const { return initTimings_; }
+    [[nodiscard]] double StartupMs() const { return startupMs_; }
+    [[nodiscard]] double FirstStepMs() const { return firstStepMs_; }
+    [[nodiscard]] uint64_t StepCount() const { return stepCount_; }
+    [[nodiscard]] double StepAvgMs() const {
+        return stepCount_ == 0 ? 0.0 : stepTotalMs_ / static_cast<double>(stepCount_);
+    }
+    [[nodiscard]] double StepMaxMs() const { return stepMaxMs_; }
+
     void Step() {
+        const double tStep = NowMs();
         Snapshot& snap = publisher_->Writable();
         // 每轮先把上一轮的值清成"未更新"，provider 覆盖自己负责的槽位
         for (size_t i = 0; i < snap.metrics.size(); ++i) {
@@ -132,13 +269,49 @@ public:
         snap.utcMs = static_cast<int64_t>(GetSystemTimeAsFileTimeRaw());
 
         for (auto& p : providers_) {
-            if (p->Available()) p->Sample(snap);
+            if (!p->Available()) continue;
+            const double tProv = NowMs();
+            p->Sample(snap);
+            // 逐 provider 累计：CPU 预算超标时，必须先知道钱花在谁身上才能优化。
+            SampleAcc& acc = sampleTotals_[p->name()];
+            const double provMs = NowMs() - tProv;
+            acc.totalMs += provMs;
+            if (provMs > acc.maxMs) acc.maxMs = provMs;
+            ++acc.count;
         }
         FillSysMetrics(snap);
         publisher_->Publish();
+
+        // 采样耗时统计：这是"CPU ≤0.3%"预算的直接证据（1 Hz 下 avg 即占用率‰的 3.6 倍）
+        const double stepMs = NowMs() - tStep;
+        if (firstStepMs_ < 0.0) firstStepMs_ = stepMs;
+        stepTotalMs_ += stepMs;
+        ++stepCount_;
+        if (stepMs > stepMaxMs_) stepMaxMs_ = stepMs;
     }
 
     [[nodiscard]] std::shared_ptr<const Snapshot> Latest() const { return publisher_->Latest(); }
+
+    /// 逐 provider 的采样耗时（CPU 预算定位用）。`--probe` 以 `sample.<name>Ms` 输出。
+    struct SampleStat {
+        std::string name;
+        double avgMs = 0.0;
+        double maxMs = 0.0;
+        uint64_t count = 0;
+    };
+    [[nodiscard]] std::vector<SampleStat> SampleStats() const {
+        std::vector<SampleStat> out;
+        out.reserve(sampleTotals_.size());
+        for (const auto& [name, acc] : sampleTotals_) {
+            SampleStat s;
+            s.name = name;
+            s.count = acc.count;
+            s.avgMs = acc.count == 0 ? 0.0 : acc.totalMs / static_cast<double>(acc.count);
+            s.maxMs = acc.maxMs;
+            out.push_back(std::move(s));
+        }
+        return out;
+    }
 
 private:
     static uint64_t GetSystemTimeAsFileTimeRaw() {
@@ -170,7 +343,7 @@ private:
     }
 
     // 尚未接线的指标：按 availability 给出确切的"为什么读不到"
-    static void MarkUnwiredByAvailability(Snapshot& snap) {
+    void MarkUnwiredByAvailability(Snapshot& snap) const {
         using wpm::config::Availability;
         const auto cat = MetricCatalog();
         for (size_t i = 0; i < cat.size(); ++i) {
@@ -184,9 +357,18 @@ private:
                     r.status = Status::NeedDriver;
                     r.detail = "需要 Ring0 通道（PawnIO），M1 接入";
                     break;
+                case Availability::AvVendorOrRing0:
+                    r.status = Status::NeedDriver;
+                    r.detail = "需要 Ring0 通道（PawnIO，Intel MSR/RAPL）或厂商 PM 表"
+                               "（AMD ADL2），M1 接入";
+                    break;
                 case Availability::AvGpu:
                     r.status = Status::NeedGpuLib;
-                    r.detail = "需要厂商 GPU 库（NVML/ADLX/IGCL），M1 接入";
+                    // 库里明明装着、却提示"需要厂商 GPU 库"是自相矛盾的，
+                    // 所以按本机实际情况给出原因（没选中/虚拟适配器/没装库）
+                    r.detail = gpuNote_.empty()
+                                   ? "需要厂商 GPU 库（NVML/ADL2/IGCL），M1 接入"
+                                   : gpuNote_;
                     break;
                 case Availability::AvPresentMon:
                     r.status = Status::NeedPresentMon;
@@ -196,9 +378,41 @@ private:
         }
     }
 
+public:
+    // 供 --probe 使用
+    [[nodiscard]] const wpm::sensors::Adl2Provider* Adl() const noexcept { return adl2_; }
+    [[nodiscard]] const wpm::sensors::AcpiThermalProvider* Acpi() const noexcept { return acpi_; }
+    [[nodiscard]] const std::vector<wpm::sensors::GpuAdapter>& GpuAdapters() const noexcept {
+        return gpuAdapters_;
+    }
+    [[nodiscard]] int GpuSelected() const noexcept { return gpuSelected_; }
+    [[nodiscard]] int GpuSelectedConfig() const noexcept { return gpuSelectedCfg_; }
+    [[nodiscard]] const std::string& GpuNote() const noexcept { return gpuNote_; }
+
+private:
     std::unique_ptr<wpm::sensors::SnapshotPublisher> publisher_;
     std::vector<std::unique_ptr<wpm::sensors::ISensorProvider>> providers_;
+    std::vector<wpm::sensors::GpuAdapter> gpuAdapters_;
+    int gpuSelectedCfg_ = -1;
+    int gpuSelected_ = -1;
+    std::string gpuNote_;
+    wpm::sensors::Adl2Provider* adl2_ = nullptr;         // 不拥有，providers_ 持有
+    wpm::sensors::AcpiThermalProvider* acpi_ = nullptr;  // 不拥有
     int64_t startCounter_ = 0;
+    std::vector<StageMs> initTimings_;
+    double startupMs_ = 0.0;
+    double firstStepMs_ = -1.0;
+    double stepTotalMs_ = 0.0;
+    double stepMaxMs_ = 0.0;
+    uint64_t stepCount_ = 0;
+
+    struct SampleAcc {
+        double totalMs = 0.0;
+        double maxMs = 0.0;
+        uint64_t count = 0;
+    };
+    // std::map（而非 unordered_map）：输出顺序稳定 = 字母序，脚本化比对才有意义。
+    std::map<std::string, SampleAcc> sampleTotals_;
 };
 
 void DumpSnapshot(const Snapshot& snap, bool onlyVisible, const Config& cfg) {
@@ -322,7 +536,8 @@ std::string ReadOsBuild() {
 
 // release-github.md §11：--probe 输出，key=value 行式、UTF-8 无 BOM、段序固定
 void PrintProbe(const Config& cfg, const wpm::config::ConfigPaths& paths,
-                const std::shared_ptr<const Snapshot>& snap, const std::string& initReport) {
+                const std::shared_ptr<const Snapshot>& snap, const std::string& initReport,
+                const Collector& collector) {
     std::printf("probeVersion=1\n");
     std::printf("appVersion=%s\n", WPM_VERSION_STRING);
     std::printf("osBuild=%s\n", ReadOsBuild().c_str());
@@ -359,13 +574,74 @@ void PrintProbe(const Config& cfg, const wpm::config::ConfigPaths& paths,
 
     std::printf("\n[superio]\n");
     std::printf("lpc.detected=%d\n", 0);
-    std::printf("note=Super I/O 探测在 M1 接入（需要 Ring0）\n");
+    std::printf("note=Super I/O 探测（LPC 0x2E/0x2F、0x4E/0x4F）需要 Ring0，M1 接入；笔记本机型通常无独立 Super I/O\n");
 
     std::printf("\n[gpu]\n");
     std::printf("gpu.adapters=%d\n", snap->gpuAdapterCount);
     std::printf("gpu.selected=%d\n", snap->gpuSelectedIndex);
+    std::printf("gpu.selectedIndexConfig=%d\n", collector.GpuSelectedConfig());
     std::printf("gpu.name=%s\n", snap->gpuName.c_str());
-    std::printf("gpu.metricsSource=none（M1 接入 NVML/ADLX/IGCL）\n");
+    const auto* adl = collector.Adl();
+    std::printf("gpu.metricsSource=%s\n", (adl && adl->Available()) ? "ADL2" : "none");
+    if (!collector.GpuNote().empty()) {
+        std::printf("gpu.note=%s\n", collector.GpuNote().c_str());
+    }
+    if (const auto* acpi = collector.Acpi(); acpi && acpi->Available()) {
+        // 热区清单是惰性枚举的（枚举本身要 4.3 MB），--probe 是诊断命令，
+        // 这里主动触发一次，好让用户看到本机到底有哪些热区。
+        acpi->ProbeZones();
+        // 只报"候选的 GPU 温度兜底热区"；没有就明确写 none
+        // （曾误报 Zones().front()，把电池热区 \_TZ.BAGZ 当成 GPU 来源）
+        // 注意：这里报的是**分类结果**，不是"可用"。热区是否真接了传感器要按每次读数判
+        // 哨兵值/合理区间（本机 \_TZ.GFXZ 恒报 25 °C，会在 Sample 里被判不可用并说明原因）。
+        std::string used = "none";
+        std::string list;
+        for (const auto& z : acpi->Zones()) {
+            // 多个候选时取第一个，与 Sample 的取用顺序一致。
+            if (z.role == "gpu" && used == "none") used = z.instance;
+            if (!list.empty()) list += " ";
+            list += z.instance + "(" + z.role + ")";
+        }
+        std::printf("gpu.acpiFallbackZone=%s\n", used.c_str());
+        std::printf("acpi.zones=%s\n", list.empty() ? "none" : list.c_str());
+    }
+
+    int gpuNo = 0;
+    for (const auto& g : collector.GpuAdapters()) {
+        ++gpuNo;
+        std::printf("\n[gpu.%d]\n", gpuNo);
+        std::printf("vendor=%s\n", wpm::sensors::VendorName(g.vendorId).c_str());
+        std::printf("name=%s\n", g.name.c_str());
+        std::printf("vendorId=0x%04X\n", g.vendorId);
+        std::printf("deviceId=0x%04X\n", g.deviceId);
+        std::printf("backend=%s\n", g.backend.empty() ? "none" : g.backend.c_str());
+        std::printf("integrated=%s\n", g.integrated ? "true" : "false");
+        std::printf("software=%s\n", g.software ? "true" : "false");
+        std::printf("dedicatedVideoMemoryMB=%llu\n",
+                    static_cast<unsigned long long>(g.dedicatedVideoMemory / (1024ull * 1024ull)));
+        std::printf("sharedSystemMemoryMB=%llu\n",
+                    static_cast<unsigned long long>(g.sharedSystemMemory / (1024ull * 1024ull)));
+        std::printf("dxgiIndex=%u\n", g.dxgiIndex);
+        std::printf("luid=0x%08X%08X\n", static_cast<unsigned>(g.luid >> 32),
+                    static_cast<unsigned>(g.luid & 0xFFFFFFFFu));
+        std::printf("duplicates=%d\n", g.duplicates);
+        const bool sel = (g.index == snap->gpuSelectedIndex);
+        std::printf("selected=%s\n", sel ? "true" : "false");
+        std::printf("telemetry=%s\n", (!g.backend.empty() && sel) ? "yes" : "no");
+        if (sel) {
+            // release-github.md §11 的 [gpu.N] 契约要求给出风扇转速原始值
+            for (size_t i = 0; i < MetricCatalog().size(); ++i) {
+                if (MetricCatalog()[i].id != "gpu.fan.rpm") continue;
+                const auto& fr = snap->metrics[i];
+                if (fr.status == Status::Ok) {
+                    std::printf("fanRpm=%.0f\n", fr.value);
+                } else {
+                    std::printf("fanRpm=n/a（%s）\n", fr.detail.empty() ? "不可用" : fr.detail.c_str());
+                }
+                break;
+            }
+        }
+    }
 
     std::printf("\n[config]\n");
     std::printf("config.path=%s\n", wpm::text::toUtf8(paths.file.wstring()).c_str());
@@ -379,11 +655,20 @@ void PrintProbe(const Config& cfg, const wpm::config::ConfigPaths& paths,
     bool any = false;
     if (!pawnio) {
         // release-github.md §11：未装 PawnIO 时仍输出免驱部分，并在 [issues] 记 pawnio=absent
-        std::printf("pawnio=absent（CPU 温度/功耗与风扇转速需要 Ring0 通道）\n");
+        std::printf("pawnio=absent（每核温度/电压、风扇转速、主板传感器需要 Ring0 通道）\n");
         any = true;
     }
     if (!IsProcessElevated()) {
         std::printf("admin=false（部分厂商 WMI 与 PresentMon CLI 路径需要管理员）\n");
+        any = true;
+    }
+    if (const auto* adlSrc = collector.Adl(); !adlSrc || !adlSrc->Available()) {
+        if (!collector.GpuNote().empty()) {
+            std::printf("gpu=%s\n", collector.GpuNote().c_str());
+            any = true;
+        }
+    } else {
+        std::printf("gpu=ADL2 免驱遥测可用（无管理员、无 Ring0）\n");
         any = true;
     }
     for (const auto& r : snap->metrics) {
@@ -396,6 +681,22 @@ void PrintProbe(const Config& cfg, const wpm::config::ConfigPaths& paths,
 
     std::printf("\n[init]\n");
     std::printf("%s", initReport.c_str());
+
+    // 启动耗时分段（docs/winperfmon-dev-plan.md 冷启动预算 ≤300 ms 的校准依据）。
+    // 只在 --probe 里输出，正常采样路径一次 printf 都不多花。
+    std::printf("\n[timing]\n");
+    std::printf("startupMs=%.1f\n", collector.StartupMs());
+    std::printf("firstStepMs=%.2f\n", collector.FirstStepMs());
+    std::printf("stepCount=%llu\n", static_cast<unsigned long long>(collector.StepCount()));
+    std::printf("stepAvgMs=%.2f\n", collector.StepAvgMs());
+    std::printf("stepMaxMs=%.2f\n", collector.StepMaxMs());
+    for (const auto& s : collector.SampleStats()) {
+        std::printf("sample.%s.avgMs=%.3f\n", s.name.c_str(), s.avgMs);
+        std::printf("sample.%s.maxMs=%.3f\n", s.name.c_str(), s.maxMs);
+    }
+    for (const auto& s : collector.InitTimings()) {
+        std::printf("stage.%s=%.1f\n", s.name.c_str(), s.ms);
+    }
 }
 
 int RunOnce(Collector& c, const Config& cfg, bool onlyVisible) {
@@ -411,6 +712,8 @@ int RunOnce(Collector& c, const Config& cfg, bool onlyVisible) {
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
+    g_processStartMs = NowMs();  // 冷启动计时原点：进程入口第一件事
+    MemMark("进程入口");          // 早于 AttachConsole，用于分离"控制台挂接"的内存代价
     // 文本模式命令直接走控制台；无参数时 M0 阶段也先走文本（GUI 在 M3）
     bool needConsole = true;
     for (int i = 1; i < argc; ++i) {
@@ -445,7 +748,9 @@ int wmain(int argc, wchar_t** argv) {
 
     // ── 配置：命令行 > 环境变量 > portable > %APPDATA% > 只读 ──────────────
     const wpm::config::ConfigPaths paths = wpm::config::ResolveConfigPaths(argc, argv);
+    MemMark("配置前");
     wpm::config::LoadResult lr = wpm::config::LoadConfig(paths);
+    MemMark("配置加载后");
     std::vector<std::string> configNotes;
     if (!lr.error.empty()) configNotes.push_back("配置解析失败，已用默认值：" + lr.error);
     for (const auto& d : lr.diagnostics) configNotes.push_back(d.field + " " + d.message);
@@ -457,14 +762,16 @@ int wmain(int argc, wchar_t** argv) {
 
     Collector collector;
     std::string initReport;
-    const bool anyProvider = collector.Init(initReport);
+    const bool anyProvider = collector.Init(cfg, initReport);
+    MemMark("provider 初始化后");
     if (!anyProvider) {
         std::printf("没有可用的免驱数据源。\n%s", initReport.c_str());
         std::fflush(stdout);
         return 2;
     }
 
-    std::printf("winperfmon %s（M0 免驱骨架）\n", WPM_VERSION_STRING);
+    std::printf("winperfmon %s（M1 免驱遥测：原生 CPU 采样 + AMD ADL2 PM 表 + ACPI 热区兜底）\n",
+                WPM_VERSION_STRING);
     std::printf("配置位置：%s%s\n", wpm::text::toUtf8(paths.file.wstring()).c_str(),
                 paths.writable ? "" : "（只读）");
     for (const auto& n : configNotes) std::printf("  配置：%s\n", n.c_str());
@@ -494,7 +801,7 @@ int wmain(int argc, wchar_t** argv) {
         collector.Step();
         Sleep(600);
         collector.Step();
-        PrintProbe(cfg, paths, collector.Latest(), initReport);
+        PrintProbe(cfg, paths, collector.Latest(), initReport, collector);
         std::fflush(stdout);
         return 0;
     }
@@ -503,6 +810,7 @@ int wmain(int argc, wchar_t** argv) {
         std::printf("连续采样 %d 秒（Ctrl+C 结束）\n\n", watchSeconds);
         const ULONGLONG deadline = GetTickCount64() + static_cast<ULONGLONG>(watchSeconds) * 1000ULL;
         collector.Step();
+        MemMark("首帧后");
         while (GetTickCount64() < deadline) {
             Sleep(static_cast<DWORD>(cfg.update.sensorIntervalMs));
             collector.Step();
@@ -518,6 +826,26 @@ int wmain(int argc, wchar_t** argv) {
                         static_cast<double>(snap->takenAtMs) / 1000.0, cpu.c_str(), freq.c_str(),
                         mem.c_str());
             std::fflush(stdout);
+        }
+        // 预算验收证据（docs/winperfmon-dev-plan.md §1）：1 Hz 下"平均采样耗时"直接就是
+        // 采集线程的 CPU 占用率；工作集是常驻内存预算（≤15 MB）的对照值。
+        const auto mem = ReadMemUsage();
+        std::printf("\n采样统计：%llu 次，平均 %.2f ms/次，最大 %.2f ms/次\n",
+                    static_cast<unsigned long long>(collector.StepCount()), collector.StepAvgMs(),
+                    collector.StepMaxMs());
+        std::printf("内存：工作集 %.2f MB，私有 %.2f MB，峰值 %.2f MB（预算 ≤15 MB）\n",
+                    mem.workingSetMb, mem.privateMb, mem.peakWorkingSetMb);
+        std::string breakdown;
+        for (const auto& s : collector.SampleStats()) {
+            char buf[64]{};
+            std::snprintf(buf, sizeof(buf), "%s%s %.2f", breakdown.empty() ? "" : "，", s.name.c_str(),
+                          s.avgMs);
+            breakdown += buf;
+        }
+        if (!breakdown.empty()) std::printf("逐源平均耗时（ms）：%s\n", breakdown.c_str());
+        for (const auto& m : g_memMarks) {
+            std::printf("  %-16s 工作集 %6.2f MB  私有 %5.2f MB\n", m.name.c_str(), m.mem.workingSetMb,
+                        m.mem.privateMb);
         }
         return 0;
     }

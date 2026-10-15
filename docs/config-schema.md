@@ -213,34 +213,34 @@
 
 | # | 指标 ID | 分组 | 默认名称 | 单位 | 精度 | 默认可见 | 数据来源（首选 → 降级） |
 |---|---|---|---|---|---|---|---|
-| 1 | `cpu.usage` | cpu | CPU | % | 0 | ✅ | PDH / `NtQuerySystemInformation` |
-| 2 | `cpu.freq.avg` | cpu | CPU 频率 | MHz | 0 | ✅ | APERF/MPERF 差分（Intel/AMD）→ PDH `% Processor Performance` × 基频 |
+| 1 | `cpu.usage` | cpu | CPU | % | 0 | ✅ | **`NtQuerySystemInformation(SystemProcessorPerformanceInformation)`（免驱默认，口径见下方"⑤ 口径"）**；拿不到时回退 PDH `% Processor Utility` / `% Processor Time` |
+| 2 | `cpu.freq.avg` | cpu | CPU 频率 | MHz | 0 | ✅ | **AMD：ADL2 PMLog `CLK_CPUCLK(34)`（免驱默认，实测空闲 3775 → 满载 4625 MHz）**；APERF/MPERF 差分（Intel/AMD）→ PDH `% Processor Performance` × 基频 |
 | 3 | `cpu.freq.percore` | cpu | 每核频率 | MHz | 0 | ❌ | 绑核读 MSR |
-| 4 | `cpu.temp.package` | cpu | CPU 温度 | °C | 0 | ✅ | Intel `0x19C`/`0x1B1`；AMD SMN `0x00059800`（Tctl/Tdie） |
+| 4 | `cpu.temp.package` | cpu | CPU 温度 | °C | 0 | ✅ | **AMD：ADL2 `TEMPERATURE_CPU(32)`（免驱免管理员，T0，实测优先）** → AMD SMN `0x00059800`（Tctl/Tdie，T1，需 PawnIO）→ ACPI 热区 `\_TZ.CPUZ`（T4，约 1 °C 分辨率）；Intel `0x19C`/`0x1B1`（T1） |
 | 5 | `cpu.temp.cores` | cpu | 每核温度 | °C | 0 | ❌ | Intel 每核 DTS；AMD PM 表 |
 | 6 | `cpu.temp.headroom` | cpu | 距温度上限 | °C | 0 | ❌ | Intel `TjMax − DTS`；AMD 家族上限表 − Tctl |
-| 7 | `cpu.power.package` | cpu | CPU 功耗 | W | 1 | ✅ | RAPL 能量差分（Intel `0x611` / AMD `0xC001029B`）；AMD 可并列 PM 表 PPT |
+| 7 | `cpu.power.package` | cpu | CPU 功耗 | W | 1 | ✅ | **AMD 核显：ADL2 `ASIC_POWER(23)`（T0，核显上即整片功耗，含 GPU 与 uncore）**；AMD 独显：RAPL `0xC001029B`；Intel：RAPL `0x611` |
 | 8 | `cpu.power.cores` | cpu | 核心功耗 | W | 1 | ❌ | Intel RAPL PP0（`0x639`）；AMD 无核级 RAPL（可用 PM 表核心功耗，标注为参考值） |
-| 9 | `cpu.power.soc` | cpu | SoC / Uncore 功耗 | W | 1 | ❌ | Intel RAPL PP1（`0x641`）；AMD PM 表 SoC 域 |
+| 9 | `cpu.power.soc` | cpu | SoC / Uncore 功耗 | W | 1 | ❌ | **AMD：ADL2 `SOC_POWER(17)`（T0，免驱）**；Intel RAPL PP1（`0x641`） |
 | 10 | `cpu.power.dram` | cpu | 内存功耗 | W | 1 | ❌ | Intel RAPL DRAM（`0x619`） |
 | 11 | `cpu.voltage` | cpu | CPU 电压 | V | 3 | ❌ | Intel `0x198`；AMD SVI2（PM 表） |
 | 12 | `cpu.throttle.reason` | cpu | 降频原因 | — | — | ❌ | Intel 热/功耗/电流限制位；AMD PM 表限制位 |
 | 13 | `mem.usage` | sys | 内存 | % | 0 | ✅ | `GlobalMemoryStatusEx` |
 | 14 | `mem.used` | sys | 已用内存 | GB | 1 | ❌ | 同上 |
-| 15 | `gpu.usage` | gpu | GPU | % | 0 | ✅ | NVML / ADLX / IGCL |
-| 16 | `gpu.freq.core` | gpu | GPU 频率 | MHz | 0 | ✅ | 同上 |
-| 17 | `gpu.freq.mem` | gpu | 显存频率 | MHz | 0 | ✅ | 同上 |
-| 18 | `gpu.temp.core` | gpu | GPU 温度 | °C | 0 | ✅ | 同上 |
-| 19 | `gpu.temp.hotspot` | gpu | 热点温度 | °C | 0 | ❌ | NVML / ADLX |
-| 20 | `gpu.temp.mem` | gpu | 显存温度 | °C | 0 | ❌ | NVML `NVML_FI_DEV_MEMORY_TEMP`；ADLX |
-| 21 | `gpu.power` | gpu | GPU 功耗 | W | 1 | ✅ | NVML `GetPowerUsage`(mW)；ADLX；IGCL |
-| 22 | `gpu.fan.percent` | gpu | 显卡风扇 | % | 0 | ❌ | NVML（多为百分比）；ADLX/IGCL |
-| 23 | `gpu.fan.rpm` | gpu | 显卡风扇 | RPM | 0 | ❌ | ADLX / IGCL（NVIDIA 通常不提供 RPM） |
-| 24 | `gpu.vram.usage` | gpu | 显存占用 | % | 0 | ❌ | NVML / ADLX |
-| 25 | `gpu.vram.used` | gpu | 显存已用 | GB | 1 | ❌ | 同上 |
-| 26 | `gpu.throttle.reason` | gpu | 显卡降频原因 | — | — | ❌ | NVML `GetCurrentClocksThrottleReasons`；ADLX |
-| 27 | `gpu.enc.usage` | gpu | 编码器 | % | 0 | ❌ | NVML / ADLX |
-| 28 | `gpu.dec.usage` | gpu | 解码器 | % | 0 | ❌ | NVML / ADLX |
+| 15 | `gpu.usage` | gpu | GPU | % | 0 | ✅ | **AMD：ADL2 `INFO_ACTIVITY_GFX(19)`（免驱，实测唯一干净的占用信号）**；NVML / ADLX / IGCL |
+| 16 | `gpu.freq.core` | gpu | GPU 频率 | MHz | 0 | ✅ | **AMD：ADL2 `CLK_GFXCLK(1)`（免驱）**；NVML / ADLX / IGCL |
+| 17 | `gpu.freq.mem` | gpu | 显存频率 | MHz | 0 | ✅ | **AMD：ADL2 `CLK_MEMCLK(2)`（免驱；口径为内存 I/O 时钟）**；NVML / ADLX / IGCL |
+| 18 | `gpu.temp.core` | gpu | GPU 温度 | °C | 0 | ✅ | **AMD：ADL2 `TEMPERATURE_GFX(28)`（免驱）**；NVML / ADLX / IGCL |
+| 19 | `gpu.temp.hotspot` | gpu | 热点温度 | °C | 0 | ❌ | **AMD：ADL2 `TEMPERATURE_HOTSPOT(27)`（本机 `supported==0`，未确证）**；NVML / ADLX |
+| 20 | `gpu.temp.mem` | gpu | 显存温度 | °C | 0 | ❌ | AMD：ADL2 PMLog **无**此索引；NVML `NVML_FI_DEV_MEMORY_TEMP`；ADLX |
+| 21 | `gpu.power` | gpu | GPU 功耗 | W | 1 | ✅ | **AMD 核显：与 CPU 共享供电轨 → 拒绝提供（防伪造，见 `docs/amd-facts.md` §9）**；AMD 独显：ADL2 `GFX_POWER(30)`；NVML `GetPowerUsage`(mW)；ADLX；IGCL |
+| 22 | `gpu.fan.percent` | gpu | 显卡风扇 | % | 0 | ❌ | AMD：ADL2 `FAN_PERCENTAGE(15)`（本机 `supported==0`）；NVML（多为百分比）；ADLX/IGCL |
+| 23 | `gpu.fan.rpm` | gpu | 显卡风扇 | RPM | 0 | ❌ | AMD：ADL2 `FAN_RPM(14)`（本机 `supported==0`；读到 0 按无数据，不当作 0 转速）；ADLX / IGCL（NVIDIA 通常不提供 RPM） |
+| 24 | `gpu.vram.usage` | gpu | 显存占用 | % | 0 | ❌ | **AMD：ADL2 路径默认不启用**（`SharedVRAMUsage_Get` 首次调用即让 perflib 计数器表常驻 +4.3 MB，见下方"⑤ 口径"）；分子 `DedicatedVRAMUsage` ÷（专用+共享）；NVML / ADLX |
+| 25 | `gpu.vram.used` | gpu | 显存已用 | GB | 1 | ❌ | **AMD：ADL2 路径默认不启用**（同上）；`Adapter_DedicatedVRAMUsage_Get`（MB，免驱，本机 381–389 MB）；NVML / ADLX |
+| 26 | `gpu.throttle.reason` | gpu | 显卡降频原因 | — | — | ❌ | AMD：ADL2 `THROTTLER_STATUS(35)` 位定义未确证 → 不提供；NVML `GetCurrentClocksThrottleReasons`；ADLX |
+| 27 | `gpu.enc.usage` | gpu | 编码器 | % | 0 | ❌ | AMD：ADL2 编码器索引口径未确证 → 不提供；NVML / ADLX |
+| 28 | `gpu.dec.usage` | gpu | 解码器 | % | 0 | ❌ | AMD：ADL2 解码器索引口径未确证 → 不提供；NVML / ADLX |
 | 29 | `fan.cpu.rpm` | fan | CPU 风扇 | RPM | 0 | ❌ | 台式机 Super I/O（Nuvoton/ITE）→ 笔记本 EC / 厂商 WMI（见主方案 §3.3.1） |
 | 30 | `fan.chassis1..6.rpm` | fan | 机箱风扇 N | RPM | 0 | ❌ | 同上（笔记本通常只有 1 个风扇，映射到 `fan.cpu.rpm`） |
 | 31 | `fan.pump.rpm` | fan | 水泵 | RPM | 0 | ❌ | 同上 |
@@ -260,7 +260,11 @@
 | 45 | `sys.session` | sys | 采集时长 | s | 0 | ❌ | 会话计时器 |
 
 > 说明：`④ GPU 指标`由 NVML/ADLX/IGCL 能力探测决定——硬件不暴露的项按 `hideMissing` 规则隐藏，**绝不填假值**（沿用主方案「缺失读数规则」）。**所有 GPU 指标只对 `gpu.selectedIndex` 选中的那一个适配器求值**，切换设备等于换数据源（`Revision` 递增、缓冲清零）。
-> `④ 笔记本补充路径`：`cpu.temp.package` 在无 Ring0 的笔记本上可降级到 ACPI 热区域（`CPUZ` 区域）；`fan.*.rpm` 在笔记本上走 EC / 厂商 WMI（主方案 §3.3.1），**三条路径都读不到时显示 N/A 并说明原因**。
+> `④ 笔记本补充路径`：`cpu.temp.package` 在 AMD 笔记本上**首选 ADL2 `TEMPERATURE_CPU(32)`（免驱免管理员，2026-10-14 实测）**，仅在 ADL2 不可用（非 AMD 卡 / 驱动未装 / `supported == 0`）时才降级到 ACPI 热区域（`\_TZ.CPUZ`，约 1 °C 分辨率且滞后可达 10 s）；`fan.*.rpm` 在笔记本上走 EC / 厂商 WMI（主方案 §3.3.1），**所有路径都读不到时显示 N/A 并说明原因**。
+> `⑤ 口径（上表两处"默认不启用"与 CPU 占用口径的完整解释）`：
+> - **`cpu.usage` 是"近似 % Processor Utility"，不是 `% Processor Time`**：原始量是原生 `NtQuerySystemInformation(SystemProcessorPerformanceInformation)` 的**核心时间占比**（`busy = KernelTime + UserTime − IdleTime`，Windows 把空闲时间也计进内核时间），**再乘当轮 `cpu.freq.avg ÷ 基频`**（基频取注册表 `HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0` 的 `~MHz`，本机 **3801 MHz**）。任务管理器的 `% Processor Utility` 是**逐核按各自频率**加权，我们只有一个"全核平均频率"因子，因此**部分核心满载时本值偏低几个百分点**（本机实测 8/16 线程满载：本值 **56–57%**、PDH Utility **59–62%**）；**拿不到可信当前频率时退回未加权核心时间占比并如实标注**，绝不静默混用来源。口径原文同时写进 `Reading::detail`。
+> - **`gpu.vram.used` / `gpu.vram.usage` 在 ADL2 路径上默认不启用**：ADL2 的显存用量导出（`ADL2_Adapter_SharedVRAMUsage_Get` / `DedicatedVRAMUsage_Get`，同一后端）**首次调用即让 Windows 性能计数器表（perflib）常驻**（首次调用 278–289 ms、+4.3 MB 私有提交且不归还），且实测 GPU 满载时数值恒定、疑非实时用量。这两项在目录里保持 `defaultVisible=false`，**默认视图与"默认可见共 13 项"完全不受影响**（`gpu.vram.*` 本就不在 ✅ 列）；M4 再评估做成显式 opt-in。
+> - `ADL2_Adapter_VRAMUsage_Get` 很便宜（0.08 ms、无内存代价）但返回值 **27463** 单位不明（按 16 KB 粒度换算约 **429 MB**，接近 DXGI 专用显存总量 418 MB），**疑似容量而非实时用量**，单位确证前不得用它顶替。
 
 ## 5. 校验与修复规则（ValidationPolicy）
 

@@ -11,10 +11,20 @@
 |---|---|---|
 | 常驻内存 | ≤ 15 MB（纯监控）/ ≤ 25 MB（含 FPS 采集） | 固定缓冲，无持续分配 |
 | CPU 占用 | ≤ 0.3%（1 Hz 采样）/ ≤ 1.0%（游戏内 FPS 采集） | ETW 由 PresentMon 服务承担 |
-| 冷启动 | ≤ 300 ms | 无运行时初始化 |
+| 冷启动 | ≤ 300 ms | 无运行时初始化（**实测 45.8 ms（免驱全量）/ 10–23 ms（`--version`，不采集）；原先 435.7 ms 的瓶颈是 perflib 计数器表加载，见 §3.1、§6**） |
 | 安装包/体积 | EXE ≤ 5 MB；发布物为**便携 ZIP**（EXE + PawnIO 官方安装包 + GPL-2.0／LGPL-2.1 合规文本，决策 ③=B） | `/MT` 静态 CRT，无 .NET/WebView2/Python |
 | 系统支持 | Win10 1809+ / Win11（x64、ARM64 后续） | 兼容内存完整性(HVCI)开启状态 |
 | 数据能力 | CPU：每核频率、每核温度、封装温度、封装/核/uncore/DRAM 功耗<br>GPU：核心/显存频率、功耗、核心/hotspot/显存温度、风扇 %<br>主板：各 FAN 转速 RPM<br>帧率：FPS、1% Low、0.1% Low、帧时间、卡顿次数、呈现模式 | 每项都需有"不可用"降级路径 |
+
+**本机实测（2026-10-15，免驱路径全量：ADL2 PM 表 + 原生 CPU + 内存 + ACPI 兜底）**
+
+| 维度 | 预算 | 实测（本机） | 余量 |
+|---|---|---|---|
+| 常驻内存 | ≤ 15 MB | **工作集 11.88 MB / 私有 2.46 MB / 峰值 12.07 MB** | 工作集余量约 3 MB |
+| 冷启动 | ≤ 300 ms | **`startupMs = 45.8 ms`**、首帧 `0.91 ms` | 约 6× |
+| 采样成本 | ≤ 0.3%（1 Hz）/ ≤ 1.0%（游戏内） | **整轮平均 0.92 ms/次、最大 1.54 ms/次**，逐源见 §6 | — |
+
+对照旧构建（PDH 计数通路，`winperfmon-pdh.exe`）：**工作集 18.04 MB / 私有 6.70 MB**，整轮采样平均 **23.65 ms/次、最大 295 ms**（`startupMs = 435.7`、其中 `stage.cpu.pdh = 381.2`）。差距全部来自**性能计数器表（perflib）是否被拉进进程**，机制与证据见 §6 的"为什么默认路径不用 PDH"。
 
 ---
 
@@ -29,13 +39,15 @@
 │ 采集调度器  分级定时器(100ms~5s) │ 空闲降频 │ 异常值校验 │ 设备热插拔 │
 ├────────────────────────────────────────────────────────────────┤
 │ ISensorProvider 抽象                                           │
-│  ├ CpuProvider  Intel MSR / AMD SMN+MSR  (+PDH 降级)           │
+│  ├ CpuProvider  Intel MSR / AMD SMN+MSR                        │
+│  │              免驱: cpu.native(占用) + ADL2 频率 (PDH 末位)    │
 │  ├ GpuProvider  NVML / ADLX / IGCL(含 Level Zero 备用)          │
 │  ├ FanProvider  SuperIO(Nuvoton/ITE) / EC / GPU 风扇            │
 │  └ FpsProvider  PresentMon Service API │ 子进程 │ 自建 ETW      │
 ├────────────────────────────────────────────────────────────────┤
 │ 访问层  Ring0: PawnIO 模块(MSR / PortIO / SMN)                  │
-│         User: PDH / WMI / NVML.dll / ADLX.dll / IGCL.dll        │
+│         User: NtQuerySystemInformation / DXGI / ADL2 / NVML.dll /    │
+│               ADLX.dll / IGCL.dll（PDH 仅作末位降级，见 §3.1）        │
 │         ETW : PresentMon 服务(SYSTEM) 或本进程 ETW 会话          │
 └────────────────────────────────────────────────────────────────┘
 ```
@@ -52,9 +64,9 @@
 
 | 指标 | 首选方案（需 Ring0） | 寄存器/接口细节 | 免驱降级 |
 |---|---|---|---|
-| 频率（每核/平均） | MSR `IA32_MPERF(0xE7)` / `IA32_APERF(0xE8)` 差分比值 × 基频 | 有效频率 = 基频 × ΔAPERF/ΔMPERF；基频比取 `MSR_PLATFORM_INFO(0xCE)` bits[15:8] × BCLK(100 MHz)；读某核的 MSR 需 `SetThreadAffinityMask` 绑核 | PDH `\Processor Information(_Total)\% Processor Performance` × 基频，或 `\Processor Information(*)\Processor Frequency`（MHz） |
-| 温度（每核/封装） | Intel：`IA32_THERM_STATUS(0x19C)`（每核，绑核读）、`IA32_PACKAGE_THERM_STATUS(0x1B1)`（封装）；TjMax 取 `MSR_TEMPERATURE_TARGET(0x1A2)` bits[23:16]，温度 = TjMax − DTS(bits[22:16]) | AMD：SMN `THM_TCON_CUR_TMP(0x00059800)` bits[31:21] × 0.125 → Tctl（注意 Tctl offset 随型号）；Tdie 需读 SMU PM 表（LHM 已实现的反向工程方案）作为增强 | WMI `MSAcpi_ThermalZoneTemperature`（多数台式机/新笔记本不支持，仅兜底） |
-| 功耗（封装/核/uncore/DRAM） | RAPL MSR：`MSR_RAPL_POWER_UNIT(0x606)`（能量单位 = 1/2^ESU J，ESU=bits[12:8]；功率单位 = bits[3:0]）、`MSR_PKG_ENERGY_STATUS(0x611)`、`MSR_PP0_ENERGY_STATUS(0x639)`、`MSR_PP1(0x641)`、`MSR_DRAM_ENERGY_STATUS(0x619)`、`MSR_PLATFORM_ENERGY_STATUS(0x64D)`；**功耗墙**：`MSR_PKG_POWER_LIMIT(0x610)`（PL1 = bits[14:0]、PL2 = bits[46:32]）、`MSR_CONFIG_TDP_NOMINAL(0x614)` | 功耗 = ΔEnergy/Δt（nwinfo 口径：Δ能量(厘焦)×1000/Δms = 厘瓦，注意单位换算）；32 位计数器按 2^32 处理回绕；Intel 与 AMD Zen 均支持 RAPL（**AMD 是 `0xC0010299` 单位 + `0xC001029B` 能量**，fam ≥ 17h） | 无可靠方案（Windows "Power Meter" 计数器仅部分机型存在） |
+| 频率（每核/平均） | MSR `IA32_MPERF(0xE7)` / `IA32_APERF(0xE8)` 差分比值 × 基频 | 有效频率 = 基频 × ΔAPERF/ΔMPERF；基频比取 `MSR_PLATFORM_INFO(0xCE)` bits[15:8] × BCLK(100 MHz)；读某核的 MSR 需 `SetThreadAffinityMask` 绑核 | **AMD：ADL2 PM 表 `CLK_CPUCLK`(34)（免驱、免管理员、零额外内存，本机 3775→4625 MHz）**；其余：PDH `\Processor Information(_Total)\% Processor Performance` × 基频，或 `\Processor Information(*)\Processor Frequency`（MHz）——**PDH 是末位选择，因为首次触碰会加载性能计数器表，见 §6** |
+| 温度（每核/封装） | Intel：`IA32_THERM_STATUS(0x19C)`（每核，绑核读）、`IA32_PACKAGE_THERM_STATUS(0x1B1)`（封装）；TjMax 取 `MSR_TEMPERATURE_TARGET(0x1A2)` bits[23:16]，温度 = TjMax − DTS(bits[22:16]) | AMD：SMN `THM_TCON_CUR_TMP(0x00059800)` bits[31:21] × 0.125 → Tctl（注意 Tctl offset 随型号）；Tdie 需读 SMU PM 表（LHM 已实现的反向工程方案）作为增强 | **AMD：ADL2 PM 表 `TEMPERATURE_CPU`(32)（免驱、免管理员、实测响应最快 → 见 §3.3.1 T0）**；其余走 WMI `MSAcpi_ThermalZoneTemperature`（多数台式机/新笔记本不支持，仅兜底） |
+| 功耗（封装/核/uncore/DRAM） | RAPL MSR：`MSR_RAPL_POWER_UNIT(0x606)`（能量单位 = 1/2^ESU J，ESU=bits[12:8]；功率单位 = bits[3:0]）、`MSR_PKG_ENERGY_STATUS(0x611)`、`MSR_PP0_ENERGY_STATUS(0x639)`、`MSR_PP1(0x641)`、`MSR_DRAM_ENERGY_STATUS(0x619)`、`MSR_PLATFORM_ENERGY_STATUS(0x64D)`；**功耗墙**：`MSR_PKG_POWER_LIMIT(0x610)`（PL1 = bits[14:0]、PL2 = bits[46:32]）、`MSR_CONFIG_TDP_NOMINAL(0x614)` | 功耗 = ΔEnergy/Δt（nwinfo 口径：Δ能量(厘焦)×1000/Δms = 厘瓦，注意单位换算）；32 位计数器按 2^32 处理回绕；Intel 与 AMD Zen 均支持 RAPL（**AMD 是 `0xC0010299` 单位 + `0xC001029B` 能量**，fam ≥ 17h） | **AMD：ADL2 PM 表 `ASIC_POWER`(23)（核显上即整片功耗）/ `SOC_POWER`(17)（免驱、免管理员；`CPU_POWER`(33) 量级不符不用）**；Intel 无可靠方案（Windows "Power Meter" 计数器仅部分机型存在） |
 | 频率/倍频（补充寄存器） | `MSR_PERF_STATUS(0x198)` 倍频 bits[15:8]、`MSR_TURBO_RATIO_LIMIT(0x1AD)` 最大倍频、`MSR_FSB_FREQ(0xCD)`（BSEL 表：266.67/133.33/200/166.67/333.33/100/400 MHz） | AMD：`0xC0010063` 当前 PState、`0xC0010064–0xC001006B` = PState0–7；17h–19h 倍频 = fid/did×2（[13:8]=did、[7:0]=fid），Zen5(1Ah) = fid×0.05 | — |
 | 功耗（AMD 增强） | SMU PM 表（PPT/TDC/EDC、STAPM、TDP、SVI2 电压电流），更接近 Ryzen Master 读数 | 家族相关（17h/19h/1Ah 索引不同），需型号表；**Tctl 是控制温度不是结温**，温度 = `0.001 × ((reg>>21) × 125) + SMU 偏移`，偏移随型号/AGESA 变化（5800X3D/7800X3D 上 Tctl 与 CCD 差很多）→ **禁止硬编码偏移** | — |
 
@@ -62,16 +74,31 @@
 > 注意 2：社区有 **RAPL 功耗读数翻倍**的案例（System Informer issue #2001）——用 HWiNFO 或墙插功耗计做一次绝对值校验，异常时降级标注而不是照抄。
 > 注意 3：本节寄存器地址/位域建议直接以 **nwinfo**（Unlicense＝公共领域）`libnw/cpu/intel_cpu.c`、`amd_cpu.c` 为准，它还附带 PawnIO 调用范式与驱动回退链（见 §4）。
 
+**为什么默认路径不碰 PDH（已实测，2026-10-15）**
+
+- **那笔一次性开销是 Windows 性能计数器表（perflib）本身，不是某个 API 的"特性"**：`PdhAddEnglishCounterW` 首次调用 270.38 ms、工作集 9.84 → 14.70 MB、私有 1.70 → 5.86 MB；`ADL2_Adapter_SharedVRAMUsage_Get` / `ADL2_Adapter_DedicatedVRAMUsage_Get` 首次调用 278–289 ms、同样 +4.3 MB 私有提交、+4.9 MB 工作集。**在同一进程里先调 ADL2 的显存用量导出之后，`PdhAddEnglishCounterW` 只要 0.05 ms**（全新进程里它是 270 ms）→ 两者共用同一张计数器表，这就是铁证。**谁先碰它谁付账，付过之后在同一进程内不归还**（`PdhCloseQuery` 也不会归还）。
+- **此前把 4.3 MB 归因于 `PdhExpandWildCardPathW` 是误判**：它只是"第一个碰 perflib 的调用"；表已加载时 `PdhExpandWildCardPathW` = 0.05–0.08 ms、`PdhOpenQueryW` = 0.00 ms。真正的代价是表本身的加载与常驻。
+- 因此默认路径**完全不碰计数器表**：`cpu.usage` 走原生 `NtQuerySystemInformation(SystemProcessorPerformanceInformation)`（单次系统调用，实测 **0.04–0.13 ms/次、零常驻内存代价**；APERF/MPERF 与 PDH 都做不到"零内存"）；`cpu.freq.avg` 在 AMD 上走 ADL2 PM 表 `CLK_CPUCLK`(34)。只有**拿不到 ADL2** 时才退回 `CpuPdhProvider`，此时 perflib 的 +4.3 MB 与首帧跳变才出现。
+- `--probe` 是诊断命令，会**主动**触发一次 perflib（用于列出 ACPI 热区，`acpi.zones=` 行）；正常 `--once` / `--watch` 路径不触发。
+
+**原生 CPU 通道的设计与口径**
+
+- `cpu.usage` 的原始量：每核 `KernelTime + UserTime − IdleTime` 差分 ÷ 总时间（两次相邻采样），即"核心时间占比"；**再乘当轮 `cpu.freq.avg ÷ 基频`**（基频取注册表 `HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0` 的 `~MHz`，本机 **3801 MHz**），得到**近似**任务管理器的 **% Processor Utility** 口径。本项目读到的原生值、基频与品牌串由 `src/sensors/cpu_info.{h,cpp}` 提供（`ReadBaseClockMHz` / `ReadCpuBrand` / `ReadLogicalCoreCount`）。
+- **口径差异必须如实标注**：Utility 是**逐核按各自的频率**加权，我们只有一个"全核平均频率"因子，因此**部分核心满载时本值偏低几个百分点**（本机实测 8/16 线程满载：本值 **56–57%**、PDH Utility **59–62%**）。拿不到可信的当前频率时**退回未加权值并如实标注**，不静默混用。
+- provider 名 `cpu.native`（`src/sensors/cpu_native.{h,cpp}`）；纯函数 `BusyPercentFromDelta(idle0, busy0, idle1, busy1)` 单独可测（`tests/test_cpu_native.cpp`，5 个用例）。
+
 ### 3.2 GPU
 
 | 厂商 | 接口 | 可用指标 |
 |---|---|---|
 | NVIDIA | **NVML**（`nvml.dll` 随驱动，无需管理员） | `nvmlDeviceGetClockInfo(SM/MEM)`、`nvmlDeviceGetPowerUsage`(mW)、`nvmlDeviceGetPowerManagementLimit`、`nvmlDeviceGetTemperature(GPU)`、`nvmlDeviceGetFieldValues(NVML_FI_DEV_MEMORY_TEMP …)` 取 hotspot/显存、`nvmlDeviceGetFanSpeed`(%)、`nvmlDeviceGetCurrentClocksThrottleReasons`(功耗/热/PM 限制降频原因)、显存占用 |
-| AMD | **ADLX**（随驱动安装，`IADLXGPUMetrics`；先用 `IADLXGPUMetricsSupport` 探测支持项） | GPU 使用率、GFX/显存频率、温度（edge/hotspot/VRAM）、风扇转速、功耗、电压、显存占用。旧卡降级 **ADL2** `ADL2_New_QueryPMLogData_Get`（`ADL_PMLOG_*`） |
+| AMD | **ADLX**（随驱动安装，`IADLXGPUMetrics`；先用 `IADLXGPUMetricsSupport` 探测支持项） | GPU 使用率、GFX/显存频率、温度（edge/hotspot/VRAM）、风扇转速、功耗、电压、显存占用。旧卡降级 **ADL2** `ADL2_New_QueryPMLogData_Get`（`ADL_PMLOG_*`）——**实测 APU 上新驱动同样走 ADL2 即可**（见下方 bullet 与 §3.3.1 T0） |
 | Intel (Arc/Iris Xe) | **IGCL**：`ctlPowerTelemetryGet`（功耗/频率/温度）、`ctlEnumTemperatureSensors`、`ctlFanGetSpeed`/`ctlFanGetConfig`、`ctlFrequencyGetState`；备用 **Level Zero Sysman**（`zesPowerGetEnergyCounter` 等） | 功耗、频率、温度、风扇 RPM、显存 |
 
 - 多 GPU/笔记本混合输出：枚举全部设备并标注 iGPU/dGPU，默认选中"当前正在渲染的 GPU"（优先用 PresentMon 报告的 GPU，其次用使用率最高者）；用户可用 `gpu.selectedIndex` 覆盖（`-1` = 自动），枚举顺序与虚拟适配器排序规则见 `docs/config-schema.md` §3.6.1，UI 见 `docs/ui-settings.md` §6.2。
 - NVIDIA 一般不提供风扇 RPM（仅 %），AMD/Intel 可给 RPM。
+- **AMD 免驱通道已实测**（本机 APU，非管理员、未装 PawnIO、HVCI 开启）：ADL2 PMLog（`atiadlxx.dll` 运行期加载）给出 `gpu.usage`、`gpu.freq.core/mem`、`gpu.temp.core`，并额外承担 CPU 封装温度与整片功耗（见 §3.3.1 的 T0）。**核显上不提供 `gpu.power`**：ADL2 的 `GFX_POWER` 会被 CPU 负载抬高（GPU 空载、CPU 满载时仍报 24–34 W），当 GPU 功耗显示会被误读 → 按 §3.3.1 的反伪造规则返回"不可用 + 理由"。逐项采用判定见 `docs/amd-facts.md` §9。
+- **`gpu.vram.used` / `gpu.vram.usage` 在 ADL2 路径上默认不启用**（2026-10-15 实测后定，`defaultVisible=false`，默认视图不受影响）：取显存用量的那两个 ADL2 导出（`ADL2_Adapter_SharedVRAMUsage_Get` / `DedicatedVRAMUsage_Get`）**首次调用即把 perflib 计数器表拉进进程（+4.3 MB 私有提交且不归还）**，且实测 GPU 满载时数值恒定、疑非实时用量 → M4 再评估做成"用户显式开启 + 接受 +4.3 MB"的 opt-in（§11）。详见 §6 与 `docs/amd-facts.md` §9。
 
 ### 3.3 主板风扇转速（Ring0 必需）
 
@@ -102,16 +129,28 @@
 1. **Windows 上不存在用户态可打开的 EC 设备对象。** `\Device\ACPIEC` 是内核对象；`IOCTL_ACPI_*` 在 DDK 头里标 `Environment: NT Kernel Model Driver only`；grep.app 全库无 `\\.\ACPIEC` 用户态先例。→ **EC 直读只能走 Ring0**，这与 §3.3 的 Super I/O 是同一个结论，风扇转速在笔记本上没有"免驱直读"这条路。
 2. **免驱的厂商 WMI 通路确实存在，但多数需要管理员**：Dell 现代机型走 `root\dcim\sysman\diagnostics` → `LegacyDiags.Execute`（FanControl 维护者在 2026 Dell Pro Max 16 实测通过，无需内核驱动）；HP `root\hp\InstrumentedBIOS` → `HPBIOS_BIOSNumericSensor` 暴露**真 RPM**（`BaseUnits` ValueMap 19 = RPM、`SensorType` 12 = Air Flow）。两条路都要求提权——v1 本来就是 `requireAdministrator`，正好可用。
 3. **ACPI 热区是最后兜底，且有两条路径**：`root\WMI` 的 `MSAcpi_ThermalZoneTemperature`（**十分之一开尔文**，需提权）与 `root\CIMV2` 的 `Win32_PerfFormattedData_Counters_ThermalZoneInformation`（**开尔文**，通常免提权可读）/ PDH 计数器集 GUID `{52bc5412-dac2-449c-8bc2-96443888fe6b}`。后者是免驱动的关键。
+4. **ACPI 热区 provider 必须"完全惰性"（2026-10-15 实测后确定）**：连「本机有哪些热区」都推迟到**真的要读温度**时才枚举——`PdhExpandWildCardPathW` / `PdhAddEnglishCounterW` 共用同一张 perflib 计数器表，**枚举热区这一步本身就会把表拉进进程（+4.3 MB 私有提交且不归还）**。`--probe` 是诊断命令，会主动触发一次以便列出热区（`acpi.zones=` 行）；正常采样路径不触发（本机该源单次成本 0.00 ms）。
 
 **温度分层降级链（可信度降序）**
 
 | # | 来源 | 前置条件 | 输出 | 失败判定 |
 |---|---|---|---|---|
-| T1 | **MSR/SMN via PawnIO**：Intel `IA32_THERM_STATUS 0x19C` / `IA32_PACKAGE_THERM_STATUS 0x1B1`（`TjMax` 取 `MSR_TEMPERATURE_TARGET 0x1A2` bits[23:16]，温度 = `TjMax − DTS`）；AMD SMN `THM_TCON_CUR_TMP 0x00059800` bits[31:21] × 0.125 | 已装 PawnIO | CPU 温度（最可信） | 读数为 0 或长期不变 → 丢弃，**不要显示 0** |
+| **T0** | **厂商免驱 PM 表（AMD ADL2）**：`ADL2_New_QueryPMLogData_Get` 的 `TEMPERATURE_CPU`(32)（绑定方式与逐项采用判定见 `docs/amd-facts.md` §9） | 已装 AMD 显卡驱动（`atiadlxx.dll`，运行期 `LoadLibraryW` 加载） | CPU 封装温度；**免驱、免管理员、无 Ring0** | `supported == 0`、读数长期不变或命中哨兵 → 丢弃，继续向下取（ACPI 兜底） |
+| T1 | **MSR/SMN via PawnIO**：Intel `IA32_THERM_STATUS 0x19C` / `IA32_PACKAGE_THERM_STATUS 0x1B1`（`TjMax` 取 `MSR_TEMPERATURE_TARGET 0x1A2` bits[23:16]，温度 = `TjMax − DTS`）；AMD SMN `THM_TCON_CUR_TMP 0x00059800` bits[31:21] × 0.125 | 已装 PawnIO | CPU 温度（每核；**封装级**在 AMD 上已由 T0 提供） | 读数为 0 或长期不变 → 丢弃，**不要显示 0** |
 | T2 | **GPU 温度**：NVML / ADLX / IGCL | 无 | ✅ 免驱 | 库缺失 → 跳过 |
 | T3 | **厂商 WMI**：HP `HPBIOS_BIOSNumericSensor`；Dell `LegacyDiags` `eax=0x10a3`；Lenovo `LENOVO_GAMEZONE_DATA` 18/19；Gigabyte `getCpuTemp`/`getGpuTemp1`；Acer `AcerGamingFunction`；ASUS `DSTS 0x00120094/0x00120097` | 已提权 | 温度 + **来源标签** | 传感器缺失（HP `OperationalStatus` 12/13）、类不存在（MOF 未注册）→ 降级 |
-| T4 | **ACPI 热区两层**：① `MSAcpi_ThermalZoneTemperature`（需提权）→ ② `Win32_PerfFormattedData_Counters_ThermalZoneInformation` / PDH 计数器集，**counter id 3「High Precision」优先于 id 0**（`id 3 = value/10 − 273`，`id 0 = value − 273`） | 无 | 温度（兜底） | 见下方"探测-再信任"判据 |
+| T4 | **ACPI 热区两层**：① `MSAcpi_ThermalZoneTemperature`（需提权）→ ② `Win32_PerfFormattedData_Counters_ThermalZoneInformation` / PDH 计数器集，**counter id 3「High Precision」优先于 id 0**（`id 3 = value/10 − 273`，`id 0 = value − 273`） | 无 | 温度（兜底）；provider **惰性**：只在真要读温度时才枚举热区（枚举即触发 perflib 加载） | 见下方"探测-再信任"判据 |
 | T5 | **外部监视器共享内存**：Afterburner `MAHMSharedMemory` → HWiNFO `Global\HWiNFO_SENS_SM2`（需 Pro）→ CoreTemp | 对方正在运行 | 温度，**必须标注「来源=外部程序」** | 时间戳 > 15 s、`FLT_MAX`、名字不匹配 → 丢弃 |
+
+**T0 的定位与反伪造规则（AMD 实测，2026-10-14）**
+
+- AMD 上 T0 **先于 T1（Ring0 MSR/SMN）与 T4（ACPI 热区）生效**：`cpu.temp.package` 由 ADL2 PM 表提供，无需 PawnIO、无需管理员（本机实测 IsAdmin=False、未装 PawnIO、HVCI 开启）。Ring0 在 AMD 上不再是封装温度/功耗的唯一路径。
+- 响应速度实测（8 线程 CPU 满载 22 秒同时刻对照）：ADL2 在 1 秒内 `49 → 73–76 °C`；ACPI 热区 `48.1 → 60.1 °C`（1 °C 步进、约 1 °C / 2 秒，明显滞后）→ **ACPI 只作兜底**（provider 仅在槽位仍为空时写入），Intel 或无厂商 PM 表的机器才轮到它。
+- 同一通道的功耗口径：`cpu.power.package` 取 `ASIC_POWER`（APU 上即整片功耗，含 GPU 与 uncore）、`cpu.power.soc` 取 `SOC_POWER`；**不取 `CPU_POWER`**（0–6 W，量级与 28–45 W 的 TDP 级不符）。
+- **反伪造规则（GPU 功耗）**：核显（APU）上 CPU 与 GPU 共享供电轨，ADL2 的 `GFX_POWER` 在 **GPU 完全空闲**（`INFO_ACTIVITY_GFX` 仅 1–8%、`CLK_GFXCLK` 恒 800 MHz）、**CPU 满载**时仍报 24–34 W，与 `ASIC_POWER`（32–33 W）几乎重合 → **核显上不得把 `GFX_POWER` 当作 `gpu.power`**：一律返回"不可用"并给出理由原文「核显与 CPU 共享供电轨：ADL2 GFX_POWER 在 GPU 空载、CPU 满载时仍报 24–34 W，无法作为 GPU 功耗（整片功耗见 cpu.power.package）」。**独显**上 `GFX_POWER` 作为 GFX 供电轨读数照常采用。
+- 判据用"GPU 空载 + CPU 满载时该读数是否仍与整片功耗重合"，**不要相信传感器名字**；凡"CPU 与 GPU 共享供电轨"的 APU 都适用。
+- **该通道不引入 perflib**：ADL2 只被 `CLK_*` / `TEMPERATURE_*` / `*_POWER` 这些 **PMLog 传感器**触碰时是便宜的（单次 0.76 ms）；**一旦调 `ADL2_Adapter_SharedVRAMUsage_Get` / `DedicatedVRAMUsage_Get`，perflib 计数器表立刻被拉进进程（+4.3 MB 私有提交且不归还）**——所以显存用量项默认不启用（见 §11 与 `docs/amd-facts.md` §9）。
+- **`AskForSupported` 式判定进代码**：`Adl2Provider::Claims(std::string_view metricId) const` 只有在①该适配器绑定存在、②目标传感器索引 > 0、③该索引出现在**本次** PMLog 的 `supported` 列表里时才返回 true；Collector 据此判断"ADL2 真能提供 `cpu.freq.avg`"才跳过 PDH（不要用"ADL2 库存在"当判据）。
 
 **风扇转速分层降级链**
 
@@ -144,7 +183,7 @@
 | 情形 | 提示要点 |
 |---|---|
 | 未装 PawnIO 且厂商无 WMI 类（多数 ThinkPad / Clevo / 白牌） | 「本机风扇转速需 PawnIO 驱动读取 EC，当前不可用」 |
-| AMD 笔记本未装 PawnIO 且无厂商 WMI | 「本机 CPU 温度需要内核态读取（PawnIO），当前不可用」——**不要显示 0** |
+| AMD 笔记本未装 PawnIO 且无厂商 WMI，**且 ADL2 通道也不可用**（非 AMD 显卡 / 显卡驱动未装 / `TEMPERATURE_CPU` 的 `supported == 0`） | 「本机 CPU 温度需要内核态读取（PawnIO），当前不可用」——**不要显示 0**；ADL2 可用时不应出现本提示（见上方 T0） |
 | 厂商 WMI 类未注册（MSI `MSI_ACPI`、Gigabyte `GB_WMIACPI_Set`） | 「厂商 WMI 类未注册（需厂商软件运行一次）」 |
 | ACPI 热区不存在 / 全部同值 / 恒为 2732 | 「本机固件未提供可用的 ACPI 热区」 |
 | Microsoft Surface 全部机型 | 「Windows 无 Surface 风扇/温度公开接口」，**永久 N/A** |
@@ -222,6 +261,7 @@
   - 用 PawnIO 仍需**安装驱动 + 模块**，Windows 会弹"安装驱动"类安全提示 → 必须像 LHM PR #1777 那样提供**"禁用 Ring0 驱动安装"开关**，让用户能选纯免驱模式。
 - **许可处理（决策 ③=B 已定）**：`PawnIO`（驱动／安装包）为 **GPL-2.0**，`PawnIO.Modules`（`.bin` 模块）为 **LGPL-2.1**（GitHub REST API `license.spdx_id = LGPL-2.1`；仓库 `COPYING` 记 LGPL-2.1-or-later）。我们**不链接、不复制其源码**，只在运行期经 IOCTL 调用；**官方签名安装包随发布包附带**，首次运行检测未装则**引导用户确认后静默安装**（可拒绝 → 免驱模式），并随包提供其许可证原文与**对应源码获取说明**（驱动 GPL-2.0、模块 LGPL-2.1；若随包提供模块还须保证模块可被用户替换；发布前须做法务确认）。**不**拆发驱动 `.bin`/`.sys`，也**不**自研安装器与驱动签名。合规动作逐条见 `docs/release-github.md` §3.5。
 - **免驱动"轻量模式"（必须有）**：仅 PDH CPU 频率 + NVML/ADLX/IGCL GPU 全指标；CPU 温度/功耗/主板风扇显示 `N/A` 并给出明确原因提示。这条路径让工具在 Vanguard 等强反作弊环境下依然可用。
+  - **AMD 例外（已实测）**：AMD 显卡驱动自带的 `atiadlxx.dll` 提供免驱 PM 表，**非管理员、无 Ring0** 即可读封装温度（`TEMPERATURE_CPU`）与整片功耗（`ASIC_POWER`）→ `cpu.temp.package` / `cpu.power.package` / `cpu.power.soc` 在 AMD 上**不属于**"显示 N/A"的那一类；Intel 上仍为 N/A（需 MSR DTS / RAPL）。反之核显上的 `gpu.power` 因共享供电轨被污染而**拒绝提供**。实测数据见 `docs/amd-facts.md` §9，温度链见 §3.3.1 的 T0。
 
 ---
 
@@ -260,6 +300,26 @@
 | PresentMon 帧事件 | 事件驱动（帧级） | 回调 + 每 200 ms 拉一次遥测 |
 | UI 刷新 / Overlay | 4 Hz / 2–4 Hz | 仅在可见时重绘 |
 
+**实测采样成本（本机 `winperfmon --watch 5`，11 次采样）**：整轮**平均 0.92 ms/次、最大 1.54 ms/次**。
+
+| 源 | 平均单次耗时 | 说明 |
+|---|---|---|
+| `adl2` | **0.76 ms** | 唯一有实感的源（`ADL2_New_QueryPMLogData_Get` 单次取 20 个传感器） |
+| `cpu.native` | **0.13 ms** | `NtQuerySystemInformation` 单次系统调用；**零常驻内存**（实测 0.04–0.13 ms） |
+| `memory` | **0.02 ms** | `GlobalMemoryStatusEx` |
+| `acpi-thermal` | **0.00 ms** | 惰性 provider：没轮到它就不做任何工作 |
+
+对照旧构建（PDH 路径）：`cpu.pdh` 单源 **0.48 ms**，整轮**平均 23.65 ms、最大 295 ms**——PDH 的"便宜"只是单次采样，代价在**首次触碰时的 perflib 加载**与随后的常驻内存（§3.1 与下方冷启动）。
+（上表为 2026-10-15 那轮的记录值；复测一轮为 `adl2 0.88`、`cpu.native 0.18`、`memory 0.01`、整轮平均 `1.09 ms / 最大 3.28 ms`——**同一结论看量级即可，末位逐轮抖动**。）
+
+**实测冷启动（`--probe` 打点）**：`startupMs = 45.8`、`firstStepMs = 0.91`；分段（ms）：`stage.gpu-enum 24.6`、`stage.adl2 20.4`、`stage.cpu.native 0.4`、`stage.memory 0.0`、`stage.acpi-thermal 0.0`、`stage.首帧发布 0.0`（启动类数字逐次抖动几毫秒，复测一轮 `startupMs 44.1`；判据看量级）。`--version`（不采集）进程墙钟 5 次：**23.3 / 11.2 / 11.5 / 10.6 / 10.9 ms**。
+对照旧构建（PDH 路径）：`startupMs = 435.7`，其中 **`stage.cpu.pdh = 381.2`** —— 这就是 perflib 计数器表的加载代价，占整轮启动的 87%。
+
+**实测内存阶梯（工作集 / 私有，MB）**：进程入口 5.96 / 1.22 → 配置前 6.14 / 1.27 → 配置加载后 6.19 / 1.27 → DXGI 枚举后 8.73 / 1.80 → `provider:memory` 8.77 / 1.80 → `provider:adl2` **11.75 / 2.46** → `provider:cpu.native` 11.76 / 2.46 → `provider:acpi-thermal` 11.77 / 2.46 → provider 初始化后 11.77 / 2.46 → **首帧后 11.83 / 2.46**。
+
+- **首帧不再有 +4.6 MB 的跳变**：有 perflib 计数器表时，那次跳变出现在"首个碰表的调用"处（本机实测为 ACPI 初始化或首帧发布）；默认路径不碰表，因此首帧只 +0.06 MB。
+- 常驻大头是 DXGI 枚举（+2.5 MB 工作集，免驱 GPU 枚举的最低成本）与 ADL2（+3.0 MB 工作集 / +0.66 MB 私有）。**这两项都不可省**，其余源基本免费。
+
 - 空闲降频：无前台全屏应用/窗口隐藏 → 采样降到 2 s；最小化到托盘 → 停止 UI 重绘（若在录制则保留 FPS）。
 - 线程模型：1 个采集线程（`CreateWaitableTimerEx` 高精度定时器 + 事件等待，不用轮询 Sleep 循环）+ UI 线程 + PresentMon 回调线程；共享数据用双缓冲快照 + `std::atomic` 序号发布，读侧无锁。
 - 权限：v1 用 `requireAdministrator` 清单；v2 拆服务后 UI 降为普通权限。
@@ -284,13 +344,19 @@
 
 | 里程碑 | 工作量 | 内容 | 验收(DoD) |
 |---|---|---|---|
-| **M0 骨架 + 免驱指标** | 2–3 天 | CMake 工程、Win32+Direct2D 窗口/托盘、采集调度器、PDH CPU 频率、NVML 全套 GPU 指标、JSON 配置、CSV 日志 | 双显卡机器上数值与 HWiNFO 一致（±1 °C / ±50 MHz / ±5% 功耗）；内存 ≤15 MB |
+| **M0 骨架 + 免驱指标** | 2–3 天 | CMake 工程、Win32+Direct2D 窗口/托盘、采集调度器、CPU 频率与占用（已改为 **`cpu.freq.avg` 走 ADL2 `CLK_CPUCLK` + `cpu.usage` 走原生 `NtQuerySystemInformation`**，PDH 退为末位降级）、NVML 全套 GPU 指标、JSON 配置、CSV 日志 | 双显卡机器上数值与 HWiNFO 一致（±1 °C / ±50 MHz / ±5% 功耗）；内存 ≤15 MB（**本机实测 11.88 MB 工作集 / 2.46 MB 私有**）、冷启动 ≤300 ms（**实测 45.8 ms**） |
 | **M1 Ring0 传感器** | 3–5 天 | PawnIO 集成、MSR 模块（APERF/MPERF、THERM_STATUS、RAPL）、AMD SMN 温度、SuperIO 探测 + 风扇 RPM、笔记本 EC / 厂商 WMI 降级链（§3.3.1）、豁免降级逻辑 | Intel 12–15 代 + AMD Zen3–5 上 CPU 温度/功耗/风扇全部可用；HVCI 开启不报错；笔记本上「读不到」时给出准确原因而非 0 |
 | **M2 FPS 引擎与统计** | 3–5 天 | PresentMon Service 客户端（含子进程/自建 ETW 两条备选路径探测）、帧环形缓冲、会话统计、1%/0.1% Low、stutter 计数、CSV 导出 | 与 CapFrameX 同局对比 1% Low 偏差 ≤0.5 FPS；FPS 采集额外 CPU ≤1% |
 | **M3 Overlay 与交互** | 4–7 天 | **RTSS OSD 后端（主路径）**、自绘无注入 Overlay（回退）、布局配置、热键、**PresentMode 降级自检**、RTSS OSD 后端、深色主题、异常提示 UI | 无边框游戏中稳定显示 4 h 无闪烁/掉帧；FSE 下正确提示"需 RTSS 后端"；检测到 `Independent Flip → Composed: Flip` 时能提示并一键关闭 |
 | **M4 打包/兼容/文档** | 3–6 天 | 单 EXE 打包、PawnIO 检测与引导安装、兼容矩阵测试、崩溃转储、README/口径说明 | 干净系统免安装运行；降级路径全部走通并给出准确原因 |
 
 合计约 **4–7 周**（单人，含联调；已含决策 ③=B/④=B 带来的 M3 +1–2 天、M4 +1–2 天）。
+
+> **M1 进度注（2026-10-15，替代 2026-10-14 版）**：M1 的**免驱部分已完成且已重做冷启动/内存预算**——三个免驱通道都在，且都**不碰 perflib 计数器表**：①封装温度 `cpu.temp.package`（ADL2 `TEMPERATURE_CPU`）、整片功耗 `cpu.power.package`（`ASIC_POWER`）、SoC 功耗（`SOC_POWER`）；②`cpu.freq.avg`（ADL2 `CLK_CPUCLK`(34)，本机空闲 3775 → 满载 4625 MHz）；③`cpu.usage`（原生 `NtQuerySystemInformation(SystemProcessorPerformanceInformation)`，≈ `% Processor Utility` 口径，见 §3.1）；ACPI 热区 provider 已改为**完全惰性**（只作 Intel 或无厂商 PM 表机器的兜底）。
+>
+> 本机实测（免驱全量）：**工作集 11.88 MB / 私有 2.46 MB / 峰值 12.07 MB**，**`startupMs = 45.8`**，整轮采样**平均 0.92 ms、最大 1.54 ms**；`--once` 汇总**可用 13 / 本机无 10 / 待接入通道 27 / 错误 0（合计 50）**。逐源成本、冷启动分段与内存阶梯见本文件 §6；验收步骤见 `docs/build-and-run.md` §6；ADL2 侧实测证据（含 perflib 归因）见 `docs/amd-facts.md` §9。
+>
+> **仍未开始的是 Ring0 部分**：PawnIO 集成、每核频率/温度与电压（`IA32_THERM_STATUS` / AMD SMN）、RAPL 每核功耗、Super I/O 与风扇 RPM、笔记本 EC 与厂商 WMI 链。
 
 ---
 
@@ -328,6 +394,8 @@
 - 帧时间曲线与 stutter 报告、会话对比与导出分享图、GPU 降频原因解读、能耗比（FPS/W）、游戏自动识别 + 每游戏配置档案、RTSS OSD 后端、插件化（Pawn 脚本自定义传感器）、多机汇总看板。
 - **HWiNFO 共享内存作为兜底数据源**：只读 `Global\HWiNFO_SENS_SM2`（回退 `HWiNFO_SENS_SM2`），`OpenFileMappingA(FILE_MAP_READ)` 免提权；`HWiNFO_SENSORS_STRING_LEN = 128`。结构参考：namazso gist `namazso/0c37be5a53863954c8c8279f66cfb1cc`、[Seraksab/Hwinfo.SharedMemory.Net](https://github.com/Seraksab/Hwinfo.SharedMemory.Net)、Rust 示例 sunshine-control-panel `src-tauri/src/hwinfo.rs`。注意这是**非稳定 ABI**：必须按 signature/version/size 协商，字段对不上就放弃。测试可用伪造器 [humza-khalid/12vhpwr-guard](https://github.com/humza-khalid/12vhpwr-guard) 的 `tools/fake_hwinfo_sm2.py` 造一个假共享内存，不装 HWiNFO 也能做 CI。
 - **数据驱动层**：把"PawnIO 模块清单 + Super I/O 芯片特判表 + AMD SMU 偏移表"做成可热更新的数据包，不重新编译就能支持新主板/新型号。
+- **`gpu.vram.used` / `gpu.vram.usage` 的显式 opt-in（M4 再定）**：在 ADL2 路径上这两项**默认不可用**（catalog 里 `defaultVisible=false`，默认视图不受影响）。原因见 §3.2 与 `docs/amd-facts.md` §9：ADL2 的显存用量导出（`ADL2_Adapter_SharedVRAMUsage_Get` / `DedicatedVRAMUsage_Get`）**首次调用即让 perflib 计数器表常驻（+4.3 MB 私有提交）**，且实测 GPU 满载时数值**恒定**、疑似非实时用量。M4 可做成"用户显式开启 + 接受 +4.3 MB"的开关，而非默认。
+- **`ADL2_Adapter_VRAMUsage_Get` 的语义待查**：很便宜（0.08 ms、无内存代价），但本机返回 **27463**、单位不明（若按 16 KB 粒度换算约 **429 MB**，接近 DXGI 报告的专用显存总量 418 MB）→ **很可能不是"实时用量"**，因此不能拿它顶替显存占用。
 
 ---
 
@@ -338,8 +406,8 @@
 | # | 决策点 | 状态 | 结论 / 影响 |
 |---|---|---|---|
 | 1 | 是否必须覆盖 AMD CPU | ✅ **已决：是** | M1 按「Intel + AMD 双路」估算；AMD 侧设计见 `docs/amd-cpu.md`（SMN/SMU PM 表、Tctl/Tdie、RAPL、PawnIO AMD 模块） |
-| 2 | GPU 是三家都做还是先 NVIDIA | ✅ **已决：三家都做** | v1 覆盖 NVIDIA（NVML）、AMD（ADLX，旧卡回退 ADL2）、Intel（IGCL，备用 Level Zero Sysman）；三家的能力探测与真机验证都进 M1，无 Intel 真机的部分代码标 `unverified`（见本文 §9 风险表） |
-| 3 | PawnIO 分发方式 | ✅ **已决：随发布包附带官方安装包并静默安装**（决策 ③=B） | 发布物 = 便携 ZIP（`winperfmon.exe` + PawnIO 官方签名安装包 + GPL-2.0／LGPL-2.1 许可证文本与源码获取说明）；构建期下载并按 SHA-256 锁定；首次运行检测未装则引导用户确认后静默安装（一次 UAC，可拒绝），拒绝即落免驱模式（CPU 温度/功耗/风扇显示 N/A 并说明原因）；我方代码仍为 MIT（mere aggregation，合规动作见 docs/release-github.md §3.5，发布前须做法务确认） |
+| 2 | GPU 是三家都做还是先 NVIDIA | ✅ **已决：三家都做** | v1 覆盖 NVIDIA（NVML）、AMD（ADLX，旧卡回退 ADL2）、Intel（IGCL，备用 Level Zero Sysman）；三家的能力探测与真机验证都进 M1，无 Intel 真机的部分代码标 `unverified`（见本文 §9 风险表）。**现状补充（2026-10-14）**：AMD 侧当前已实现并实测可用的是 **ADL2 PMLog 免驱通道**（本机 APU、非管理员、无 PawnIO：给出 GPU 占用/频率/温度与显存用量，并承担 CPU 封装温度与整片功耗；见本文 §3.2 与 `docs/amd-facts.md` §9），ADLX 接入仍未开始 |
+| 3 | PawnIO 分发方式 | ✅ **已决：随发布包附带官方安装包并静默安装**（决策 ③=B） | 发布物 = 便携 ZIP（`winperfmon.exe` + PawnIO 官方签名安装包 + GPL-2.0／LGPL-2.1 许可证文本与源码获取说明）；构建期下载并按 SHA-256 锁定；首次运行检测未装则引导用户确认后静默安装（一次 UAC，可拒绝），拒绝即落免驱模式（CPU 温度/功耗/风扇显示 N/A 并说明原因；**AMD 上封装温度与整片功耗由 ADL2 免驱提供，不受此决定影响**，见 §3.3.1 T0）；我方代码仍为 MIT（mere aggregation，合规动作见 docs/release-github.md §3.5，发布前须做法务确认） |
 | 4 | 真独占全屏（FSE）下 Overlay 可见性 | ✅ **已决：硬需求 → RTSS OSD 共享内存后端为主路径**（决策 ④=B） | 自绘无注入 Overlay 在真 FSE（`Hardware: Legacy Flip`）下架构上不可见（DWM 不参与合成）；主路径改为写 `RTSSSharedMemoryV2`（我方不注入，注入由用户自装的 RTSS 完成）；无 RTSS 时回退自绘 Overlay 并明确提示；RTSS 模式下字号/颜色只能按 RTSS OSD 标签近似映射，位置/不透明度/点击穿透由 RTSS 控制（见 docs/ui-settings.md §6.1） |
 | 5 | 是否需要发布给他人使用 | ✅ **已决：是（发布到 GitHub）** | 需 LICENSE / NOTICE / 隐私声明 / CI / Release 流程，见 `docs/release-github.md`；首版 portable zip + 单 EXE，不做安装器与驱动签名 |
 | 6 | 运行时用户自定义设置 | ✅ **已决：要** | 排版方式（横向/纵向）、指标可见性与排序、置顶策略、文字大小与颜色；数据结构与读写接口见 `docs/config-schema.md`，交互行为见 `docs/ui-settings.md` |

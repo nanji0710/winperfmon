@@ -3,6 +3,7 @@
 
 #include "config/catalog.h"
 #include "core/text.h"
+#include "sensors/cpu_info.h"
 
 #include <windows.h>
 #include <pdh.h>
@@ -20,40 +21,6 @@ constexpr wchar_t kUtilPath[] =
     L"\\Processor Information(_Total)\\% Processor Utility";
 constexpr wchar_t kTimePath[] = L"\\Processor Information(_Total)\\% Processor Time";
 
-double ReadRegistryBaseClockMHz() {
-    HKEY key = nullptr;
-    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
-                      L"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", 0, KEY_READ,
-                      &key) != ERROR_SUCCESS) {
-        return 0.0;
-    }
-    DWORD mhz = 0;
-    DWORD size = sizeof(mhz);
-    DWORD type = 0;
-    const LONG rc = RegQueryValueExW(key, L"~MHz", nullptr, &type,
-                                    reinterpret_cast<LPBYTE>(&mhz), &size);
-    RegCloseKey(key);
-    if (rc != ERROR_SUCCESS || type != REG_DWORD) return 0.0;
-    return static_cast<double>(mhz);
-}
-
-std::string ReadCpuBrand() {
-    HKEY key = nullptr;
-    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
-                      L"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", 0, KEY_READ,
-                      &key) != ERROR_SUCCESS) {
-        return {};
-    }
-    wchar_t buf[128]{};
-    DWORD size = sizeof(buf) - sizeof(wchar_t);
-    DWORD type = 0;
-    const LONG rc = RegQueryValueExW(key, L"ProcessorNameString", nullptr, &type,
-                                     reinterpret_cast<LPBYTE>(buf), &size);
-    RegCloseKey(key);
-    if (rc != ERROR_SUCCESS || type != REG_SZ) return {};
-    // 注册表里的品牌串常带尾随空格（本机 "AMD Ryzen 7 H 255 w/ Radeon 780M  "）
-    return wpm::text::toUtf8(buf);
-}
 
 bool AddCounter(void* query, const wchar_t* path, void** out) {
     PDH_HCOUNTER h = nullptr;
@@ -88,7 +55,7 @@ bool CpuPdhProvider::Init(std::string& detail) {
         if (id == "cpu.usage" || id == "cpu.freq.avg") slots_.push_back(i);
     }
 
-    baseClockMHz_ = ReadRegistryBaseClockMHz();
+    baseClockMHz_ = ReadBaseClockMHz();
     cpuBrand_ = ReadCpuBrand();
 
     PDH_HQUERY q = nullptr;
@@ -126,9 +93,8 @@ void CpuPdhProvider::Sample(Snapshot& snap) {
     // 诊断字段：snapshot 里的基频与品牌串供 --probe 与 UI 使用
     snap.baseClockMHz = baseClockMHz_;
     snap.cpuBrand = cpuBrand_;
-    SYSTEM_INFO si{};
-    GetNativeSystemInfo(&si);
-    snap.logicalCores = si.dwNumberOfProcessors;
+    snap.logicalCores = ReadLogicalCoreCount();
+    snap.physicalCores = ReadPhysicalCoreCount();
     PDH_HQUERY q = static_cast<PDH_HQUERY>(query_);
     PdhCollectQueryData(q);
 

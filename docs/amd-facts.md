@@ -1,6 +1,8 @@
-# AMD CPU 遥测：8 项技术事实核实记录
+# AMD CPU 遥测：8 项技术事实核实记录（+ §9 ADL2 免驱 PM 表实测）
 
 > 本文件是 `amd-cpu.md` §9 待核实清单的核实记录，日期 **2026-10-14**。规则：**每条结论必须带证据；证据形式＝仓库 + 文件路径 + 行号，或官方文档 URL + 章节**；查不到可靠来源的一律写「未找到可靠来源」并给探测式实现建议，不填猜测值。
+>
+> §9 不在 `amd-cpu.md` §9 的原始待核实清单内，是同日在真机上追加确认的 **ADL2 免驱通道**；其证据形式与本文件前八节不同：不引仓库行号，而是**本机直接采样**（ADL2 PMLog / PDH / DXGI）得到的实测值 + 采用判定。
 
 核实手段：`grep.app` API（给出「仓库 + 路径 + 行号 + 该行原文」）、`api.github.com` 目录/树 API、`raw.githubusercontent.com` / `cdn.jsdelivr.net` 取源码全文、amd.com 官方产品页。注意：本机 HTTPS 在 Windows PowerShell 5.1 下不可用（schannel `SEC_E_NO_CREDENTIALS`），全部取数经外部抓取工具完成。
 
@@ -86,6 +88,128 @@
 | 证据 | ① `torvalds/linux:arch/x86/events/rapl.c:598` `[PERF_RAPL_PKG] = { MSR_AMD_PKG_ENERGY_STATUS, &rapl_events_pkg_group, test_msr, false, RAPL_MSR_MASK }`（AMD 只注册 PKG 域）。② `drivers/powercap/intel_rapl_msr.c:121-123`（AMD：单位 MSR `MSR_AMD_RAPL_POWER_UNIT`、PKG `MSR_AMD_PKG_ENERGY_STATUS`、PP0/CORE `MSR_AMD_CORE_ENERGY_STATUS`）。③ `tools/power/x86/turbostat/turbostat.c:680-698`（`RAPL_AMD_PKG_ENERGY_STAT = BIT(16) /* 0xc001029b */`）。④ `djselbeck/rapl-read-ryzen:ryzen.c`（`AMD_MSR_PWR_UNIT 0xC0010299` / `AMD_MSR_CORE_ENERGY 0xC001029A` / `AMD_MSR_PACKAGE_ENERGY 0xC001029B`；`time_unit=(x&0xF0000)>>16; energy_unit=(x&0x1F00)>>8; power_unit=x&0xF;`，换算 `pow(0.5, unit)`）。⑤ AMD 官方文档指针：`ocerman/zenmonitor:src/ss/msr.c:57` 注释 `AMD OSRR: page 139 - MSRC001_0299`；`coreboot/coreboot:util/amdtool/cpu.c:468-470`（`0xc0010299 RAPL_PWR_UNIT`、`0xc001029a CORE_ENERGY_STS`）。⑥ 域叠加导致翻倍的实例：CodeCarbon RAPL 文档 <https://docs.codecarbon.io/latest/explanation/rapl>（「RAPL domains are hierarchical and overlapping. Summing them causes severe over-counting!」）；winsiderss/systeminformer Issue #2001 <https://github.com/winsiderss/systeminformer/issues/2001>（「RAPL seems to overstate the power usage by a factor of two」，Intel i5-12600K / i5-1145G7，成因是「sum of all CPU power domains and the package power」）。⑦ AMD RAPL 的历史：Phoronix <https://www.phoronix.com/news/Google-RAPLs-AMD-Zen>（Google 补丁才让 Zen1/Zen2 暴露封装级 RAPL，此前只支持 Intel）。 |
 | 置信度 | 软件聚合与单位导致 2× 级误差：**已证实**；「AMD RAPL 硬件本身给出 2× 读数」：**未找到** |
 | 对设计的影响 | 改 §5.3 第 2 条、§8 单测项（翻倍自检改为「聚合与单位校验」）；§9 第 8 行关闭 |
+
+## 9. ADL2 免驱 PM 表实测（2026-10-14，HP ZHAN66 14 G8a / Ryzen 7 H 255）
+
+> 本节是结论摘要；**索引 0–45 的原始核实记录（含 §0 更正公告）在 `docs/adl2-facts.md`**。
+
+**测试机**：
+
+| 项 | 实测值 |
+|---|---|
+| 机型 / APU | HP ZHAN66 14 G8a；AMD Ryzen 7 H 255 w/ Radeon 780M（Family 25 = `0x19`、Model 117 = `0x75`，Hawk Point Zen4 APU / RDNA3） |
+| 系统 | Windows 11 build 26300.9711；HVCI **已启用** |
+| 权限 | **非管理员**（IsAdmin=False）；**未安装 PawnIO** |
+| 已在系统里的厂商 DLL | `C:\Windows\System32\atiadlxx.dll` 存在（2,508,304 字节、2734 个导出）；`amdadlx64.dll` 存在 |
+| 不存在的 DLL | `nvml.dll`、`igcl.dll`、`ze_loader.dll` 均不存在 |
+
+**调用范式**（全部在运行期 `LoadLibraryW` + `GetProcAddress`，不链接、不分发）：
+
+| 步骤 | 事实 |
+|---|---|
+| 建上下文 | `ADL2_Main_Control_Create(malloc 回调, enumConnected=1, &ctx)`——**第一个参数必须是 malloc 回调**；传 `nullptr` 返回 `rc = -11`（`ADL_ERR_INVALID_RESOURCE`） |
+| 取适配器数 | `ADL2_Adapter_NumberOfAdapters_Get` 返回 **5** |
+| 取数据 | `ADL2_New_QueryPMLogData_Get(ctx, iAdapterIndex, &data)` 返回 `rc = 0` |
+| 结构体 | 必须先置 `iSize`：`AdapterInfo.iSize`、`ADLPMLogDataOutput.iSize = sizeof(...)`；`ADLSingleSensorData { int supported; int value; }`，数组 `sensors[256]` |
+| 支持性判定 | **只能看 `ADLSingleSensorData.supported`**。`ADL2_New_QueryPMLogSupport_Get` **不可用**：它返回的结构不是「按索引的 bool 数组」，不能拿它查支持性 |
+| 适配器绑定 | `ADL2_Adapter_NumberOfAdapters_Get` → `ADL2_Adapter_AdapterInfo_Get` 取 `strUDID`（形如 `PCI\VEN_1002&DEV_1900&SUBSYS_...&REV_C1`）→ 与 DXGI 的 vendorId/deviceId 匹配 → `ADL2_Adapter_Active_Get` 取绑定下标 |
+
+**本机可用传感器索引共 20 个**：`1 2 3 7 16 17 18 19 21 23 28 29 30 31 32 33 34 35 38 39`。
+
+**索引语义表**（名称取自 Linux HWMonitor 的 `AtiAdlxx.cs` 枚举，经本机负载实测确认。「仅交叉校验」＝读数只用于验证同域 U/I/P 自洽，不进指标目录）：
+
+| 索引 | 名称 | 单位 | 本机实测范围 | 是否采用及理由 |
+|---:|---|---|---|---|
+| 1 | `CLK_GFXCLK` | MHz | 空闲 800 → GPU 满载 2267–2437 | **采用**：`gpu.freq.core` |
+| 2 | `CLK_MEMCLK` | MHz | 1000–2800 | **采用**：`gpu.freq.mem`（APU 上即共享系统内存时钟） |
+| 3 | `CLK_SOCCLK` | MHz | 400–1028 | 未采用 |
+| 7 | `CLK_VCNCLK` | MHz | 800 | 未采用 |
+| 16 | `SOC_VOLTAGE` | mV | 765–979 | 仅交叉校验 |
+| 17 | `SOC_POWER` | W | 1–3 | **采用**：`cpu.power.soc` |
+| 18 | `SOC_CURRENT` | A | 2–3 | 仅交叉校验 |
+| 19 | `INFO_ACTIVITY_GFX` | % | 空闲 0–8 → GPU 满载 98–99 | **采用**：`gpu.usage`，本机唯一干净的 GPU 负载信号 |
+| 21 | `GFX_VOLTAGE` | mV | 1005–1107 | 仅交叉校验 |
+| 23 | `ASIC_POWER` | W | 空闲 7 → CPU 满载 32–33 → GPU 满载 42 | **采用**：核显上作为 `cpu.power.package`（整片功耗） |
+| 28 | `TEMPERATURE_GFX` | °C | 空闲 43–45 → GPU 满载 67 | **采用**：`gpu.temp.core` |
+| 29 | `TEMPERATURE_SOC` | °C | 63–64 | 未采用 |
+| 30 | `GFX_POWER` | W | 空闲 1 → CPU 满载 24–34 → GPU 满载 35–41 | **核显上不采用**（读数被 CPU 负载污染，见下节）；独显上作为 GFX 供电轨读数照常采用 |
+| 31 | `GFX_CURRENT` | A | 24–28 | 仅交叉校验 |
+| 32 | `TEMPERATURE_CPU` | °C | 空闲 43–50 → 满载 74–79 | **采用**：`cpu.temp.package`（AMD 免驱主路径） |
+| 33 | `CPU_POWER` | W | 0–6 | **不采用**：量级与 28–45 W 的 TDP 级明显不符 |
+| 34 | `CLK_CPUCLK` | MHz | 空闲 3775 → 满载 4625 | **采用**：`cpu.freq.avg`（免驱主路径；**不碰 perflib**，见下"显存用量导出"节） |
+| 35 | `THROTTLER_STATUS` | 位域 | 恒 1 | 未采用：ADL2 只给位域、**未做位→文案映射**，所以 `gpu.throttle.reason` 仍不提供 |
+| 38 | `SMART_POWERSHIFT_CPU` | — | 恒 0 | 未采用 |
+| 39 | `SMART_POWERSHIFT_DGPU` | — | 恒 0 | 未采用 |
+
+**反伪造：核显上 `GFX_POWER` 不是 GPU 功耗**。实验＝`cpuload.exe 22 8`（8 线程纯 CPU 满载）期间每秒采样一次 ADL2 PMLog，共 18 秒：
+
+| 传感器 | CPU 满载期间读数 | 含义 |
+|---|---|---|
+| `INFO_ACTIVITY_GFX`(19) | 仅 1–8% | GPU 完全空闲 |
+| `CLK_GFXCLK`(1) | 恒 800 MHz | GPU 完全空闲 |
+| `GFX_POWER`(30) | 24–34 W | 被 CPU 负载抬高 |
+| `ASIC_POWER`(23) | 32–33 W | 与 30 几乎重合 |
+| `TEMPERATURE_CPU`(32) | 75–79 °C | CPU 满载 |
+
+- 结论：核显（APU）上 CPU 与 GPU **共享供电轨**，ADL2 的 `GFX_POWER` 会被 CPU 负载抬高到与 `ASIC_POWER` 几乎重合。把它当「GPU 功耗」显示，用户会在 **GPU 空载时看到 30 W**——属于会被误读的假数据。
+- 因此本项目在**核显**上对 `gpu.power` 返回「不可用」，并给出理由原文：「核显与 CPU 共享供电轨：ADL2 GFX_POWER 在 GPU 空载、CPU 满载时仍报 24–34 W，无法作为 GPU 功耗（整片功耗见 cpu.power.package）」。独显上 `GFX_POWER` 作为 GFX 供电轨读数照常采用。
+- 自洽性交叉验证（说明这些索引不是随机噪声）：`SOC_VOLTAGE`(16) × `SOC_CURRENT`(18) = 0.77 V × 2 A ≈ 1.5 W ≈ `SOC_POWER`(17) 的 1–3 W；`GFX_VOLTAGE`(21) × `GFX_CURRENT`(31) = 1.0 V × 26 A ≈ 26 W ≈ `GFX_POWER`(30) 的 26 W。
+- **CPU 功耗口径**：核显上 `cpu.power.package` 取 `ASIC_POWER`(23)（整片功耗，含 GPU 与 uncore；实测 CPU 满载 32–33 W、GPU 满载 42 W，落在 Ryzen 7 H 255 的 28–45 W TDP 级），**不取 `CPU_POWER`(33)**（0–6 W，量级不符）。
+
+**ACPI 热区作为兜底**（PDH 计数器集 `Thermal Zone Information`，免驱、免管理员）：
+
+| 项 | 实测 |
+|---|---|
+| 本机热区 | 9 个：`_TZ.CPUZ`、`_TZ.GFXZ`、`_TZ.CHGZ`、`_TZ.PGTZ`、`_TZ.EXTZ`、`_TZ.LOCZ`、`_TZ.BAGZ`、`_TZ.BATZ`、`_TZ.MSHZ` |
+| 换算 | `_TZ.CPUZ\High Precision Temperature` 原始值是 **0.1 K**：`°C = v/10 − 273.15`；非管理员即可读；分辨率约 1 °C |
+| 与 ADL2 同时刻对照 | 8 线程 CPU 满载 22 秒：ACPI `48.1 → 60.1 °C`（1 °C 步进、明显滞后，约 1 °C / 2 秒）；ADL2 的 `TEMPERATURE_CPU` 在 1 秒内 `49 → 73–76 °C`，随后稳定在 54–67 °C |
+| 可用性陷阱 | `_TZ.GFXZ` 恒 25.1 °C（ACPI 表里有、底层没接）→ **必须做「是否随负载变化」的可用性判断**，不能「有热区就当温度源」 |
+| 哨兵值 | `2732`（＝0.0 °C）与 `0` 是「无数据」哨兵，不是温度 |
+| 权限对比 | `MSAcpi_ThermalZoneTemperature` 需要管理员，而 `Thermal Zone Information` 计数器**不需要** |
+
+结论：**ADL2 的 `TEMPERATURE_CPU` 响应快得多，作为 `cpu.temp.package` 的主路径；ACPI 仅作兜底**（provider 只在槽位仍为空时写入），并且在 Intel 或没有厂商 PM 表的机器上才轮到它。
+
+**GPU 枚举（DXGI）与核显显存口径**：
+
+- 用 DXGI（`CreateDXGIFactory1` + `EnumAdapters1`）而不是 WMI 的 `Win32_VideoController`：后者要 COM + WmiPrvSE 进程，冷启动开销与常驻内存远超 DXGI（本项目预算：冷启动 ≤ 300 ms、常驻 ≤ 15 MB）。
+- 本机 DXGI 报 **5 条适配器**：4 条**除 LUID 外完全相同**的 AMD Radeon 记录（描述、vendorId `0x1002`、deviceId `0x1900`、专用显存 418 MB 全同，**LUID 甚至也是同一个 `0x137D8`**）+ 1 条 Microsoft Basic Render Driver（WARP，`dxgiIndex=4`）。
+- 处理方式：枚举时折叠「vendorId + deviceId + 描述 + 专用显存 + software 标志」全同的记录，记 `duplicates=4`；折叠后本机 `gpu.selectedIndex` 取值域为 **2 项**（AMD 核显 + WARP）。不折叠的话设置页会出现 4 个一模一样的选项。
+- 集成显卡判据：非软件适配器、专用显存 ≤ 1 GiB、且共享系统内存 ≥ 4× 专用显存（本机 418 MB 专用 / 11918 MB 共享 → 判为集成）。
+- **显存占用率的分母**：核显用「专用 + 共享系统内存」（本机 418 + 11918 MB），独显用专用显存。理由：核显的「专用显存」只是 BIOS 切出的一小块，拿它当分母会得出「91% 显存已满」这种假警报（实测已用 381 MB / 专用 419 MB）。
+- `ADL2_Adapter_DedicatedVRAMUsage_Get(ctx, iAdapterIndex, int* outMB)` 可用，本机返回约 **381–389 MB**（专用显存已用量）。
+- **代价（2026-10-15 实测）**：这两个显存用量导出（`ADL2_Adapter_SharedVRAMUsage_Get` / `ADL2_Adapter_DedicatedVRAMUsage_Get`，同一后端）**首次调用会把 Windows 性能计数器表（perflib）拉进进程**——首次调用 278–289 ms、工作集 9.42 → 14.34/14.39 MB、私有 1.73 → 5.91/6.05 MB，且**不归还**。因此 `gpu.vram.used` / `gpu.vram.usage` 在 ADL2 路径上**默认不可用**（catalog 里 `defaultVisible=false`，默认视图不受影响），M4 再考虑做成显式 opt-in；`Reading.detail` 原文：「默认不启用：ADL2 显存用量导出首次调用即让性能计数器表常驻（+4.3 MB），且实测 GPU 满载时数值恒定，疑非实时用量」。
+- **`ADL2_Adapter_VRAMUsage_Get` 的语义疑问**：它**很便宜**（0.08 ms、无内存代价），但本机返回 **27463**、单位不明——若按 **16 KB 粒度**换算约 **429 MB**，非常接近 DXGI 报告的专用显存**总量 418 MB**，说明它**很可能不是"实时用量"而是容量类读数**。在单位语义确证前**不能拿它顶替显存占用**（否则会在负载变化时给出恒定假值）。
+
+**性能计数器表（perflib）归因实测（2026-10-15，`adl2mem.exe` 同进程顺序打点，输出为"工作集/私有"）**
+
+决定性证据：**那笔 4.3 MB / 约 280–300 ms 的一次性开销来自 Windows 性能计数器表本身，不是某个具体 API 的"特性"。谁先碰它谁付账，且付过之后在同一进程内再不归还。**
+
+| 打点 | 耗时 | 工作集（MB） | 私有（MB） |
+|---|---|---|---|
+| `PdhAddEnglishCounterW`（首次） | **270.38 ms** | 9.84 → 14.70 | 1.70 → 5.86 |
+| `ADL2_Adapter_SharedVRAMUsage_Get`（首次） | 278–289 ms | 9.42 → 14.34 | 1.73 → 5.91 |
+| `ADL2_Adapter_DedicatedVRAMUsage_Get`（首次，与上行同一后端） | 278–289 ms | 9.42 → 14.39 | 1.73 → 6.05 |
+| **先调 ADL2 的显存用量导出，再调 `PdhAddEnglishCounterW`** | **0.05 ms** | — | — |
+| `PdhOpenQueryW` | 0.00 ms | — | — |
+| `PdhExpandWildCardPathW`（表已加载时） | 0.05–0.08 ms | — | — |
+
+- **共用同一张表就是铁证**：同一进程里先付过 ADL2 显存用量导出的账，`PdhAddEnglishCounterW` 从 **270 ms 掉到 0.05 ms**（对照：全新进程里是 270 ms）。
+- **此前把 4.3 MB 归因于 `PdhExpandWildCardPathW` 是误判**：它只是"第一个碰 PDH 的调用"而已（表已加载时只要 0.05–0.08 ms）。真正的代价是表本身的加载与常驻；`PdhCloseQuery` 也不会归还。
+- **对本项目的直接后果**：ACPI 热区兜底链（`Thermal Zone Information` 计数器集）**连枚举热区都会触发这次加载**，因此 provider 必须**完全惰性**（只在真要读温度时才枚举；`--probe` 会主动触发一次）。ADL2 只在被 `CLK_*` / `TEMPERATURE_*` / `*_POWER` 这些 **PMLog 传感器**触碰时是便宜的（单次 0.76 ms）。
+- **因此免驱默认路径不走 PDH**：`cpu.usage` 改走原生 `NtQuerySystemInformation(SystemProcessorPerformanceInformation)`（单次 0.04–0.13 ms、**零常驻内存代价**），`cpu.freq.avg` 改走 `CLK_CPUCLK`(34)。本机实测：工作集 **11.88 MB / 私有 2.46 MB**、`startupMs = 45.8`、整轮采样平均 **0.92 ms**；对照 PDH 路径旧构建：工作集 18.04 MB / 私有 6.70 MB、`startupMs = 435.7`（其中 `stage.cpu.pdh = 381.2`）、整轮平均 23.65 ms/最大 295 ms。完整分段与阶梯见 `docs/winperfmon-dev-plan.md` §6。
+
+**由本节带来的代码/契约变化**：
+
+| 项 | 变化 |
+|---|---|
+| `Availability` | 新增编译期字段值 `AvVendorOrRing0`（CPU 封装级温度/功耗：AMD 上由 ADL2 的 PM 表免驱提供，Intel 上仍需 Ring0 的 MSR DTS / RAPL）。它是 `catalog.h` 的编译期辅助字段，**不是 config-schema.md 的文档字段** |
+| 改用它标注的指标 | `cpu.temp.package`、`cpu.power.package`、`cpu.power.soc`（此前都标 `AvRing0`，在 AMD 免驱场景下与事实不符） |
+| provider 优先级 | `memory` → **`cpu.native`（占用，零常驻内存）** → `adl2`（AMD 免驱：温度/功耗/GPU/`cpu.freq.avg`）→ **`cpu.pdh`（末位降级，首次触碰即让 perflib 常驻 +4.3 MB）** → `acpi-thermal`（兜底且**完全惰性**，只在槽位仍为空时才枚举热区） |
+| 本机 `--once` 验收 | 50 项指标中**可用 13 项、本机无 10 项、待接入通道 27 项、错误 0**；可用项里含 `cpu.temp.package` **46 °C**、`cpu.power.package` **13.0 W**（ADL2 `ASIC_POWER`）、`cpu.freq.avg` **3775 MHz**（`CLK_CPUCLK`）、`cpu.usage` **6%**（原生通道）、`mem.usage` **69%**、`gpu.usage` **2%**、`gpu.freq.core` **800 MHz**、`gpu.freq.mem` **2800 MHz**、`gpu.temp.core` **46 °C**。`gpu.vram.used` / `gpu.vram.usage` **本轮起默认不可用**（见上"显存用量导出"节）——目录项仍在，只是 `defaultVisible=false` 且不出现在可用项里 |
+| `Adl2Provider::Claims()` | 新增 `bool Claims(std::string_view metricId) const`：只有在**该适配器绑定存在**、**目标传感器索引 > 0**、且**该索引出现在本次 PMLog 的 `supported` 列表里**三者同时成立时才返回 true。Collector 用 `Claims("cpu.freq.avg")` 判断 ADL2 真能提供该指标**才跳过 PDH**；**不得用"ADL2 库存在"或"`ADL2_Main_Control_Create` 成功"当判据** |
+| 分发红线 | **绝不随包分发这些 DLL / 头文件 / 导入库**，一律运行期 `LoadLibraryW` + `GetProcAddress`（遵守「无运行时依赖」铁律） |
+
+**因此被改写的既有结论**（本文件与同批文档）：`cpu.temp.package` / `cpu.power.package` / `cpu.power.soc` 在 AMD 上**不需要 Ring0**，「免驱模式只能显示 N/A」的前提在 AMD 上不成立；CPU 温度在**免驱侧的第一来源从 ACPI 热区改为 ADL2 PM 表**，ACPI 退为兜底（Intel 或没有厂商 PM 表的机器才轮到它）；`gpu.power` 在核显上按假数据拒绝提供，是本目录里第一个**主动不提供**的指标。
 
 ## 与 `amd-cpu.md` 原文冲突的更正汇总
 

@@ -21,9 +21,13 @@ enum class Category : uint8_t { Cpu, Gpu, Fan, Fps, Sys };
 // 用 Av 前缀避免与 Category 的成员名在同一 using enum 作用域下冲突。
 enum class Availability : uint8_t {
     AvAny,        // 免驱即可（PDH / GlobalMemoryStatusEx / 本地时钟）
-    AvGpu,        // 需要厂商 GPU 库（NVML / ADLX / IGCL）
+    AvGpu,        // 需要厂商 GPU 库（NVML / ADL2 / ADLX / IGCL）
     AvRing0,      // 需要 PawnIO 通道（MSR / SMN / Super I/O / EC）
     AvPresentMon, // 需要 PresentMon（服务 SDK 或命令行）
+    // CPU 封装级温度/功耗：AMD 上由 ADL2 的 PM 表免驱提供（实测可用），
+    // Intel 上仍需 Ring0（MSR DTS / RAPL）。这两种能力不等价，所以单列一类，
+    // 免得在 AMD 机器上给出"需要 Ring0"这种与事实不符的降级原因。
+    AvVendorOrRing0,
 };
 
 struct MetricInfo {

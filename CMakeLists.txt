@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(winperfmon VERSION 0.1.0 LANGUAGES CXX)
+project(winperfmon VERSION 0.2.0 LANGUAGES CXX)
 
 # ── 全局编译选项 ────────────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 20)
@@ -45,10 +45,17 @@ add_library(wpm_core STATIC
   src/config/store.cpp
   src/sensors/sensor.cpp
   src/sensors/memory.cpp
+  src/sensors/cpu_info.cpp
+  src/sensors/cpu_native.cpp
   src/sensors/cpu_pdh.cpp
+  src/sensors/acpi_thermal.cpp
+  src/sensors/gpu_enum.cpp
+  src/sensors/adl2.cpp
 )
 target_include_directories(wpm_core PUBLIC include src)
-target_link_libraries(wpm_core PUBLIC wpm_options pdh)
+# dxgi：GPU 适配器枚举（系统库，非运行时依赖；不随包分发任何 DLL）
+# psapi：自测工作集（常驻内存预算 ≤15 MB 的证据）
+target_link_libraries(wpm_core PUBLIC wpm_options pdh dxgi psapi)
 
 # ── 主程序 ──────────────────────────────────────────────────────────────────
 add_executable(winperfmon src/app/main.cpp)
@@ -62,7 +69,8 @@ endif()
 # ── 单测 ────────────────────────────────────────────────────────────────────
 if(WPM_BUILD_TESTS)
   enable_testing()
-  add_executable(wpm_tests tests/test_main.cpp tests/test_json.cpp tests/test_config.cpp)
+  add_executable(wpm_tests tests/test_main.cpp tests/test_json.cpp tests/test_config.cpp
+                            tests/test_gpu_enum.cpp tests/test_cpu_native.cpp)
   target_link_libraries(wpm_tests PRIVATE wpm_core)
   add_test(NAME unit COMMAND wpm_tests)
 endif()

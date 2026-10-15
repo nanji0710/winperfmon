@@ -322,7 +322,7 @@ winperfmon/                        # 仓库根（名称已定：winperfmon）
 
 ```ini
 probeVersion=1
-appVersion=0.1.0
+appVersion=0.2.0
 osBuild=26100
 admin=true
 pawnio=present
@@ -370,6 +370,13 @@ fanRpm=1350
 ```
 
 > 要点：`[system]` 用于区分「同芯片不同板」；`chip.*` 必须给高字节 ID；`[fan.N]` 必须保留原始计数与寄存器出处（否则无法判定 8/16 位计数与分频位域）；`[volt.N]` 必须给 `nominal`；`[issues]` 是最有价值的排障信息。
+
+**当前实现的段序（M1 实测，以此为准）**：`probeVersion` / `appVersion` / `osBuild` / `admin` / `pawnio` / `hvci` / `ring0Backend` → `[system]` → `[superio]` → `[gpu]` → `[gpu.N]` → `[config]` → `[issues]` → `[init]` → `[timing]`。
+
+- `[gpu]`：`gpu.adapters`（枚举到的适配器数）、`gpu.selected`（解析后的下标，`-1` = 无遥测目标）、`gpu.selectedIndexConfig`（配置/命令行给的原始值，用于区分"用户要 1"和"最终没选"）、`gpu.name`、`gpu.metricsSource`（`ADL2` / `none`）、`gpu.note`（无法选定时的**原因原文**，含"不会改用其它适配器的读数"）、`gpu.acpiFallbackZone`（**候选**的 GPU 温度兜底热区：分类为 `gpu` 的第一个热区，无则 `none`；它是候选而非"可用"——热区是否真接了传感器按每次读数判，读数不合理时该指标会显示不可用并说明原因）、`acpi.zones`（本机热区清单，形如 `\_TZ.CPUZ(cpu) \_TZ.GFXZ(gpu) \_TZ.BAGZ(other)`；**只有 `--probe` 会触发这次枚举**，常驻路径是惰性的——枚举本身会让性能计数器表常驻，见 dev-plan 内存一节）。
+- `[gpu.N]`（N 从 1 开始）：`vendor` / `vendorId` / `deviceId` / `name` / `backend`（`ADL2` / 空）/ `integrated` / `software` / `dxgiIndex` / `luid` / `duplicates` / `dedicatedVideoMemoryMB` / `sharedSystemMemoryMB`。`duplicates` = 被折叠的同类条目数（DXGI 会把同一块核显报成多条除 LUID 外完全相同的记录，本机实测 4 条）。**这一节是判断"为什么没读到 GPU"的第一现场**。
+- `[init]`：每个 provider 的 `name: 就绪/不可用（原因）`，以及**未绑定时写明"为什么未绑定"**（例如 `gpu.selectedIndex` 解析失败）。
+- `[timing]`：`startupMs`（进程入口 → 首帧可用快照）、`firstStepMs`、`stepCount` / `stepAvgMs` / `stepMaxMs`（常驻采样轮次的次数与耗时）、`sample.<provider>.avgMs` / `sample.<provider>.maxMs`（逐源耗时，provider 名如 `adl2` / `cpu.native`）、`stage.<阶段名>=<毫秒>`（初始化分段）。用途是给"冷启动 ≤300 ms""CPU ≤0.3%"两条预算定位瓶颈；`[timing]` 与 `[init]` 都属**诊断段**，提交芯片表时可直接保留（不含主机名/用户名/序列号）。
 
 **维护者流程**：`tools/probe2table.py`（待开发）生成候选条目 → 人工核对寄存器与公式 → 落入 `sensor-tables/<vendor>-<chip>.json`（字段示例：`{ "chip": "NCT6779D", "chipId": [0xC5, 0x60], "bank": 0, "fans": [{"index": 1, "countLo": "0x4B", "countHi": "0x4C", "divisorReg": "0x0B", "divisorShift": 0, "rpmFormula": "1350000/(count*divisor)"}], "temps": [], "volts": [], "quirks": [] }`）→ 增加 canned 回归用例（无硬件也能在 CI 跑）→ 在 `CHANGELOG.md` 的「传感器支持变化」节登记。冲突时**以探测原始数据为准**，解释不通就加「主板特判」。
 
