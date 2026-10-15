@@ -170,7 +170,26 @@ LRESULT CALLBACK HudWindow::WndProcThunk(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
     return self->WndProc(hwnd, msg, wp, lp);
 }
 
+void HudWindow::SetFreePosition(int x, int y) {
+    if (hwnd_ == nullptr) return;
+    freePosition_ = true;
+    SetWindowPos(hwnd_, nullptr, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+void HudWindow::ReportState() {
+    if (!onState_ || hwnd_ == nullptr) return;
+    RECT r{};
+    if (!GetWindowRect(hwnd_, &r)) return;
+    HudState st;
+    st.x = r.left;
+    st.y = r.top;
+    st.opacity = style_.opacity;
+    st.freePosition = freePosition_;
+    onState_(st);
+}
+
 void HudWindow::ApplyPosition() {
+    freePosition_ = false;  // 预设角落是显式选择，覆盖用户拖动过的位置
     RECT work{};
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
     const int margin = Scale(style_.marginDp);
@@ -504,6 +523,8 @@ LRESULT HudWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (dragging_) {
                 dragging_ = false;
                 ReleaseCapture();
+                freePosition_ = true;  // 拖过就不再回角落
+                ReportState();
             }
             return 0;
         case WM_RBUTTONUP: {
@@ -521,6 +542,7 @@ LRESULT HudWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             style_.opacity = std::clamp(style_.opacity + (delta > 0 ? 0.05f : -0.05f), 0.2f, 1.0f);
             SetLayeredWindowAttributes(hwnd_, 0,
                                        static_cast<BYTE>(style_.opacity * 255.0f + 0.5f), LWA_ALPHA);
+            ReportState();
             return 0;
         }
         case WM_DPICHANGED: {

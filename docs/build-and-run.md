@@ -63,7 +63,7 @@ build\wpm_tests.exe
 ctest --test-dir build --output-on-failure
 ```
 
-当前 **71 passed / 0 failed**（`test_cpu_native.cpp` 5 个纯函数用例、`test_gpu_enum.cpp` 8 个、`test_config.cpp` 16 个、`test_json.cpp` 6 个、Ring0 解码口径 8 个、**帧统计 15 个与 CSV 解析 13 个（M2）**），覆盖：
+当前 **72 passed / 0 failed**（`test_cpu_native.cpp` 5 个纯函数用例、`test_gpu_enum.cpp` 8 个、`test_config.cpp` 16 个、`test_json.cpp` 6 个、Ring0 解码口径 8 个、**帧统计 15 个与 CSV 解析 13 个（M2）**），覆盖：
 
 - `json_*`：标量 / 对象 / 非法输入（尾随逗号、注释、未闭合 = 空串）/ 往返 / 深度与字节上限 / `\uXXXX` 转义
 - `config_*`：默认值稳定（13 项默认可见）、目录全展开、越界夹紧、未知丢弃 + 缺失追加、
@@ -185,7 +185,7 @@ ctest --test-dir build --output-on-failure
 | 5 | 看封装功耗 | `ring0.pwrUnitRaw=0x000A1003`（ESU = 16 → 能量单位 `2^-16 J` = 15.2588 µJ）、`ring0.pkgPowerW=25.8` |
 | 6 | `build\winperfmon.exe --all` | 50 项汇总：**可用 13 / 本机无 12 / 待接入通道 25 / 错误 0**（与 §6 免驱的 13/10/27 **口径不同，不得混用**） |
 | 7 | `build\winperfmon.exe --watch 12` | 采样 25 次：**平均 1.66 ms/次、最大 3.34 ms/次**；工作集 **11.96 MB** / 私有 **2.47 MB** / 峰值 **12.05 MB**；逐源 `cpu.ring0 0.65 ms`；`--probe` 的 `startupMs = 43.4`、`stepAvgMs = 1.66` |
-| 8 | `build\wpm_tests.exe` | **71 passed / 0 failed**（含 8 个 Ring0 解码口径用例与 28 个 M2 帧统计/CSV 用例，见 §4） |
+| 8 | `build\wpm_tests.exe` | **72 passed / 0 failed**（含 8 个 Ring0 解码口径用例与 28 个 M2 帧统计/CSV 用例，见 §4） |
 
 `--probe` 的 `[ring0]` 段逐字（本机 HP ZHAN66 14 G8a / Ryzen 7 H 255 / Radeon 780M / Win11 build 26300）：
 
@@ -233,7 +233,7 @@ M2 的**解析与统计部分**已实现并验收；**真机 PresentMon + 真游
 
 | # | 步骤 | 预期 |
 |---|---|---|
-| 1 | `build\wpm_tests.exe` | **71 passed / 0 failed**，其中帧统计 15 个、CSV 解析 13 个（见 §4） |
+| 1 | `build\wpm_tests.exe` | **72 passed / 0 failed**，其中帧统计 15 个、CSV 解析 13 个（见 §4） |
 | 2 | `build\winperfmon.exe --once` | 汇总口径变为 **可用 13 / 本机无 20 / 待接入通道 17 / 错误 0**（50 项）—— 10 个 `fps.*` 由 FPS provider 认领；本机没有 PresentMon，故判「本机无」并列出**找过的每一个路径** |
 | 3 | `build\winperfmon.exe --probe` 的 `[fps]` 段 | `fps.presentmon=<路径 或 未找到>`、`fps.running=false`（**`--probe` 不启动子进程**）、`fps.note=诊断模式（--probe）：只报状态，不启动 PresentMon 子进程`；段序位于 `[gpu.N]` 之后、`[config]` 之前 |
 | 4 | 检查进程没有被凭空拉起 | `--probe` 的 `firstStepMs` 应 < 1 ms（未加诊断模式时会接近 10 ms —— 首帧把 PresentMon 拉起来了） |

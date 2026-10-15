@@ -59,10 +59,22 @@ struct HudStyle {
     int align = 0;               // 0 = 起始 / 1 = 居中 / 2 = 末尾（横铺时对齐整行；纵铺时对齐数值列）
 };
 
+/// 面板的「用户改过的状态」：拖动后的位置与滚轮调出来的不透明度。
+/// 单独一个结构是为了让调用方（main）把它们写回配置——本项目决策 ⑥ 要求运行时
+/// 自定义设置能留下来，而不是每次启动都重来一遍。
+struct HudState {
+    int x = 0;
+    int y = 0;
+    float opacity = 0.9f;
+    bool freePosition = false;  ///< true = 用户拖过，位置不再是预设角落
+};
+
 class HudWindow {
 public:
     /// 每次刷新前调用：外部在这里采样（Collector::Step）并组装模型。
     using BuildFn = std::function<HudModel()>;
+    /// 面板状态被用户改动时回调（拖动结束 / 滚轮调透明度）。
+    using StateFn = std::function<void(const HudState&)>;
 
     HudWindow();
     ~HudWindow();
@@ -72,6 +84,9 @@ public:
     /// 必须在加入消息循环前调用 `SetBuilder`；`error` 收到创建失败原因（中文）。
     bool Create(const HudStyle& style, std::string* error);
     void SetBuilder(BuildFn fn) { builder_ = std::move(fn); }
+    void SetOnStateChanged(StateFn fn) { onState_ = std::move(fn); }
+    /// 按配置里的 `position.mode = free` 摆到显式坐标（创建后调用，覆盖角落预设）。
+    void SetFreePosition(int x, int y);
     void SetIntervalMs(unsigned ms);
     void SetTopmost(bool on);
     [[nodiscard]] bool topmost() const noexcept { return topmost_; }
@@ -88,16 +103,19 @@ private:
     void RebuildFonts();
     void Refresh();                       // 调 builder_、必要时改窗口尺寸、请求重绘
     void Paint();
-    void ApplyPosition();                 // 按 corner/margin 摆到工作区角落
+    void ApplyPosition();                 // 按 corner/margin 摆到工作区角落（会清掉 free 位置）
+    void ReportState();                   // 用户改了位置/透明度 → 通知调用方写回配置
     void ShowContextMenu(POINT screenPt);
     [[nodiscard]] int Scale(int dp) const;
 
     HWND hwnd_ = nullptr;
     HudStyle style_;
     BuildFn builder_;
+    StateFn onState_;
     HudModel model_;
     unsigned intervalMs_ = 500;
     bool topmost_ = true;
+    bool freePosition_ = false;  ///< 用户拖过：ApplyPosition 不再抢回角落
 
     HFONT fontLabel_ = nullptr;
     HFONT fontValue_ = nullptr;

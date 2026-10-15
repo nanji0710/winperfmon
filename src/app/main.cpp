@@ -614,15 +614,41 @@ wpm::ui::HudModel BuildHudModel(Collector& collector, const Config& cfg) {
     return m;
 }
 
-int RunHud(Collector& collector, const Config& cfg) {
+int RunHud(Collector& collector, wpm::config::ConfigStore& store) {
     wpm::ui::HudWindow::EnablePerMonitorDpi();
     wpm::ui::HudWindow win;
-    win.SetIntervalMs(static_cast<unsigned>(cfg.update.sensorIntervalMs));
-    win.SetBuilder([&collector, &cfg]() { return BuildHudModel(collector, cfg); });
+    {
+        const Config& cfg = *store.Snapshot();
+        win.SetIntervalMs(static_cast<unsigned>(cfg.update.sensorIntervalMs));
+    }
+    // 每轮现取配置快照：改 config.json 后热重载立即反映到面板（布局/指标/颜色都跟着变）。
+    win.SetBuilder([&collector, &store]() {
+        store.Poll();  // 处理防抖落盘与文件 mtime 轮询
+        std::shared_ptr<const Config> snap = store.Snapshot();
+        return BuildHudModel(collector, *snap);
+    });
+    // 用户拖过 / 滚过之后把位置与不透明度写回配置（决策 ⑥：运行时设置要留下来）。
+    win.SetOnStateChanged([&store](const wpm::ui::HudState& st) {
+        store.Mutate(
+            [&st](Config& c) {
+                if (st.freePosition) {
+                    c.window.posMode = wpm::config::PositionMode::Free;
+                    c.window.x = st.x;
+                    c.window.y = st.y;
+                }
+                c.window.opacity = st.opacity;
+            },
+            /*persist=*/true);
+        store.Flush();  // 拖一下就立刻落盘：用户随时可能把进程关掉
+    });
     std::string err;
-    if (!win.Create(HudStyleFromConfig(cfg), &err)) {
+    const Config& startup = *store.Snapshot();
+    if (!win.Create(HudStyleFromConfig(startup), &err)) {
         std::printf("窗口创建失败：%s\n", err.c_str());
         return 3;
+    }
+    if (startup.window.posMode == wpm::config::PositionMode::Free) {
+        win.SetFreePosition(startup.window.x, startup.window.y);
     }
     return win.Run();
 }
@@ -1020,7 +1046,13 @@ int wmain(int argc, wchar_t** argv) {
     }
 
     // 无参数 / --hud：直接进窗口模式（没有控制台，printf 不会有人看到）
-    if (hud) return RunHud(collector, cfg);
+    if (hud) {
+        // HUD 模式才建 ConfigStore：面板上的拖动/滚轮改动要经它落盘（原子写 + 防抖），
+        // 控制台模式不需要这条路径，也就不为它付内存。（注意 store 必须活到 Run 返回）
+        wpm::config::ConfigStore store(paths, lr.config);
+        store.SetAutoSave(true, 500);
+        return RunHud(collector, store);
+    }
 
     // 读快照时保留一份：下面的控制台输出与控制台命令都基于同一次采样
 

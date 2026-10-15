@@ -150,6 +150,8 @@
 | `gpu.selectedIndex` | 换数据源：GPU 类指标短暂显示 `—`，缓冲清零、`Revision` 递增；不重启进程（若选定 GPU 的提供程序尚未加载则先加载） |
 | `text.fontFamily` | 重建 DirectWrite 文本格式与布局缓存 |
 
+> **面板自身的运行时写回（已实现，M3 雏形）**：直接拖动 HUD 面板会写入 `window.position.mode = "free"` 与 `x` / `y`；在面板上滚滚轮会写入 `window.opacity`（0.2–1.0，步进 0.05）。两者都经 `ConfigStore` 原子落盘（`.tmp` → `MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)`），重启后位置与不透明度保持。这属于「面板直接改配置」，与本文档描述的设置窗口是两条并存入口。
+
 ## 10. 键盘、DPI 与可访问性
 
 - Tab 顺序：导航 → 内容区控件 → 底部条；所有滑块可用方向键微调（`Shift` 加速 10×）。
