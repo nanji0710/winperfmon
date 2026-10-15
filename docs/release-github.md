@@ -322,7 +322,7 @@ winperfmon/                        # 仓库根（名称已定：winperfmon）
 
 ```ini
 probeVersion=1
-appVersion=0.2.0
+appVersion=0.3.0
 osBuild=26100
 admin=true
 pawnio=present

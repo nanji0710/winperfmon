@@ -43,3 +43,5 @@ portable.flag
 *.snk
 *.pem
 *.key
+
+dist/

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(winperfmon VERSION 0.2.0 LANGUAGES CXX)
+project(winperfmon VERSION 0.3.0 LANGUAGES CXX)
 
 # ── 全局编译选项 ────────────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 20)
